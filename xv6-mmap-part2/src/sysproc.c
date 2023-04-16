@@ -89,3 +89,43 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+int
+sys_mmap(void)
+{
+  int addr, len, prot, flags, fd, offset;
+
+  if (argint(0, &addr) < 0) {
+    return 0;
+  }
+  if (argint(1, &len) < 0) {
+    return 0;
+  }
+  if (argint(2, &prot) < 0) {
+    return 0;
+  }
+  if (argint(3, &flags) < 0) {
+    return 0;
+  }
+  if ((void*)addr != (void*)0 && argint(4, &fd) < 0) {
+    return 0;
+  }
+  if (argint(5, &offset) < 0) {
+    return 0;
+  }
+  return (int)mmap((void*)addr, (uint)len, prot, flags, fd, offset);
+}
+
+int
+sys_munmap(void)
+{
+  int addr, len;
+
+  if (argint(0, &addr) < 0) {
+    return -1;
+  }
+  if (argint(1, &len) < 0) {
+    return -1;
+  }
+  return munmap((void*)addr, (uint)len);
+}

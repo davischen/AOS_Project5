@@ -69,6 +69,10 @@ void            kfree(char*);
 void            kinit1(void*, void*);
 void            kinit2(void*, void*);
 
+// kmalloc.c
+void*           kmalloc(uint);
+void            kmfree(void*);
+
 // kbd.c
 void            kbdintr(void);
 
@@ -120,6 +124,8 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
+void*           mmap(void*, uint, int, int, int, int);
+int             munmap(void*, uint);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -175,7 +181,8 @@ void            seginit(void);
 void            kvmalloc(void);
 pde_t*          setupkvm(void);
 char*           uva2ka(pde_t*, char*);
-int             allocuvm(pde_t*, uint, uint);
+int             allocuvm_mmap(pde_t*, uint, uint);
+int             allocuvm_proc(pde_t*, uint, uint);
 int             deallocuvm(pde_t*, uint, uint);
 void            freevm(pde_t*);
 void            inituvm(pde_t*, char*, uint);

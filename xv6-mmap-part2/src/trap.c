@@ -7,6 +7,7 @@
 #include "x86.h"
 #include "traps.h"
 #include "spinlock.h"
+#include "mman.h"
 
 // Interrupt descriptor table (shared by all CPUs).
 struct gatedesc idt[256];
@@ -14,6 +15,11 @@ extern uint vectors[];  // in vectors.S: array of 256 entry pointers
 struct spinlock tickslock;
 uint ticks;
 
+void
+pagefault_handler(struct trapframe *tf)
+{
+  cprintf("pagefault_handler==\n");
+}
 void
 tvinit(void)
 {

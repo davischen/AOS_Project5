@@ -93,27 +93,34 @@ sys_uptime(void)
 int
 sys_mmap(void)
 {
-  int addr, len, prot, flags, fd, offset;
+  int addr, length, prot, flags, fd, offset;
 
-  if (argint(0, &addr) < 0) {
-    return 0;
+  if(argint(0, &addr) < 0)
+  {
+    return -1;
   }
-  if (argint(1, &len) < 0) {
-    return 0;
+  if(argint(1, &length) < 0)
+  {
+    return -1;
   }
-  if (argint(2, &prot) < 0) {
-    return 0;
+  if(argint(2, &prot) < 0)
+  {
+    return -1;
   }
-  if (argint(3, &flags) < 0) {
-    return 0;
+  if(argint(3, &flags) < 0)
+  {
+    return -1;
   }
-  if ((void*)addr != (void*)0 && argint(4, &fd) < 0) {
-    return 0;
+  if(argint(4, &fd) < 0)
+  {
+    return -1;
   }
-  if (argint(5, &offset) < 0) {
-    return 0;
+  if(argint(5, &offset) < 0)
+  {
+    return -1;
   }
-  return (int)mmap((void*)addr, (uint)len, prot, flags, fd, offset);
+
+  return (int)mmap((void*)addr, (uint)length, (uint)prot, (uint)flags, (uint)fd, (uint)offset);
 }
 
 int
@@ -128,4 +135,21 @@ sys_munmap(void)
     return -1;
   }
   return munmap((void*)addr, (uint)len);
+}
+int
+sys_msync(void)
+{
+  int addr;
+  int length;
+
+  if(argint(0, &addr) < 0)
+  {
+    return -1;
+  }
+  if(argint(1, &length) < 0)
+  {
+    return -1;
+  }
+
+  return msync((void*)addr, (uint)length);
 }

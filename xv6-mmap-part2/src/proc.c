@@ -144,7 +144,7 @@ userinit(void)
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
-  p->mmap_regions = (struct mmap_region*)0;
+  p->region_head = (struct mmap_region*)0;
 
   // this assignment to p->state lets other cores
   // run this process. the acquire forces the above
@@ -195,13 +195,13 @@ fork(void)
   }
 
   // Copy the mmap regions.
-  for(mmap = curproc->mmap_regions, prev_mmap = (struct mmap_region*)0;
+  for(mmap = curproc->region_head, prev_mmap = (struct mmap_region*)0;
       mmap != (struct mmap_region*)0;
-      mmap = mmap->next_mmap_region, prev_mmap = new_mmap){
+      mmap = mmap->next_region, prev_mmap = new_mmap){
     if((new_mmap = kmalloc(sizeof(struct mmap_region))) ==
        (struct mmap_region*)0){
-      free_mmap_regions(np->mmap_regions);
-      np->mmap_regions = (struct mmap_region*)0;
+      free_mmap_regions(np->region_head);
+      np->region_head = (struct mmap_region*)0;
       kfree(np->kstack);
       np->kstack = 0;
       np->state = UNUSED;
@@ -210,21 +210,21 @@ fork(void)
     new_mmap->start_addr = mmap->start_addr;
     new_mmap->length = mmap->length;
     new_mmap->prot = mmap->prot;
-    new_mmap->flags = mmap->flags;
+    new_mmap->region_type = mmap->region_type;
     new_mmap->fd = mmap->fd;
     new_mmap->offset = mmap->offset;
-    new_mmap->next_mmap_region = (struct mmap_region*)0;
+    new_mmap->next_region = (struct mmap_region*)0;
     if(prev_mmap != (struct mmap_region*)0){
-      prev_mmap->next_mmap_region = new_mmap;
+      prev_mmap->next_region = new_mmap;
     } else{
-      np->mmap_regions = new_mmap;
+      np->region_head = new_mmap;
     }
   }
 
   // Copy process state from proc.
   if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
-    free_mmap_regions(np->mmap_regions);
-    np->mmap_regions = (struct mmap_region*)0;
+    free_mmap_regions(np->region_head);
+    np->region_head = (struct mmap_region*)0;
     kfree(np->kstack);
     np->kstack = 0;
     np->state = UNUSED;
@@ -329,8 +329,8 @@ wait(void)
         p->name[0] = 0;
         p->killed = 0;
         p->state = UNUSED;
-        free_mmap_regions(p->mmap_regions);
-        p->mmap_regions = (struct mmap_region*)0;
+        free_mmap_regions(p->region_head);
+        p->region_head = (struct mmap_region*)0;
         release(&ptable.lock);
         return pid;
       }
@@ -531,103 +531,23 @@ kill(int pid)
   release(&ptable.lock);
   return -1;
 }
-
-void*
-mmap(void* addr, uint length, int prot, int flags, int fd, int offset)
-{
-  struct mmap_region *mmap;
-  struct proc *curproc = myproc();
-  int bad_addr;
-
-  addr = (void*)PGROUNDUP((uint)addr + MMAPBASE);
-  if ((uint)addr >= KERNBASE ||
-      (uint)addr + PGROUNDUP(length) >= KERNBASE) {
-    addr = (void*)MMAPBASE;
-    if ((uint)addr + PGROUNDUP(length) >= KERNBASE) {
-      return (void*)0;
-    }
-  }
-  for (mmap = curproc->mmap_regions; mmap != (struct mmap_region*)0
-         ;) {
-    bad_addr = 0;
-    if ((uint)addr >= (uint)mmap->start_addr &&
-        (uint)mmap->start_addr + PGROUNDUP(mmap->length) >= (uint)addr) {
-      bad_addr = 1;
-    }
-    if ((uint)mmap->start_addr >= (uint)addr &&
-        (uint)addr + PGROUNDUP(length) >= (uint)mmap->start_addr) {
-      bad_addr = 1;
-    }
-    if (bad_addr) {
-      addr = (void*)(mmap->start_addr + PGROUNDUP(mmap->length) + PGSIZE);
-      mmap = curproc->mmap_regions;
-      continue;
-    }
-    mmap = mmap->next_mmap_region;
-  }
-  if ((uint)addr >= KERNBASE ||
-      (uint)addr + PGROUNDUP(length) >= KERNBASE) {
-    return (void*)0;
-  }
-  if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
-    return (void*)0;
-  }
-  if ((mmap = kmalloc(sizeof(struct mmap_region))) ==
-      (struct mmap_region*)0) {
-    deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
-    return (void*)0;
-  }
-  mmap->start_addr = (uint)addr;
-  mmap->length = length;
-  mmap->prot = prot;
-  mmap->flags = flags;
-  mmap->fd = fd;
-  mmap->offset = offset;
-  mmap->next_mmap_region = curproc->mmap_regions;
-  curproc->mmap_regions = mmap;
-  return addr;
-}
-
-int
-munmap(void *addr, uint length)
-{
-  struct mmap_region *mmap, *prev_mmap;
-  struct proc *curproc = myproc();
-
-  for (mmap = curproc->mmap_regions, prev_mmap = (struct mmap_region*)0;
-       mmap != (struct mmap_region*)0;
-       prev_mmap = mmap, mmap = mmap->next_mmap_region) {
-    if ((uint)addr == (uint)mmap->start_addr && length == mmap->length) {
-      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
-      if (prev_mmap != (struct mmap_region*)0) {
-        prev_mmap->next_mmap_region = mmap->next_mmap_region;
-      } else {
-        curproc->mmap_regions = mmap->next_mmap_region;
-      }
-      kmfree(mmap);
-      return 0;
-    }
-  }
-  return -1;
-}
-
 static void
 free_mmap_regions(struct mmap_region *mmap_regions)
 {
   struct mmap_region *mmap;
 
   for(mmap = mmap_regions; mmap != (struct mmap_region*)0;
-      mmap = mmap->next_mmap_region){
+      mmap = mmap->next_region){
     mmap->start_addr = 0;
     mmap->length = 0;
     mmap->prot = 0;
-    mmap->flags = 0;
+    mmap->region_type = 0;
     mmap->fd = 0;
     mmap->offset = 0;
   }
   while(mmap_regions != (struct mmap_region*)0){
     mmap = mmap_regions;
-    mmap_regions = mmap->next_mmap_region;
+    mmap_regions = mmap->next_region;
     kmfree(mmap);
   }
 }

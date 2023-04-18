@@ -10,6 +10,10 @@ struct sleeplock;
 struct stat;
 struct superblock;
 
+#ifndef __ASSEMBLER__
+typedef uint pte_t;
+#endif
+
 // bio.c
 void            binit(void);
 struct buf*     bread(uint, uint);
@@ -33,6 +37,7 @@ void            fileinit(void);
 int             fileread(struct file*, char*, int n);
 int             filestat(struct file*, struct stat*);
 int             filewrite(struct file*, char*, int n);
+int             fileseek(struct file*, uint);
 
 // fs.c
 void            readsb(int dev, struct superblock *sb);
@@ -124,8 +129,11 @@ void            userinit(void);
 int             wait(void);
 void            wakeup(void*);
 void            yield(void);
+
+//mmap.c
 void*           mmap(void*, uint, int, int, int, int);
 int             munmap(void*, uint);
+int             msync(void*, uint);
 
 // swtch.S
 void            swtch(struct context**, struct context*);
@@ -162,6 +170,9 @@ int             fetchint(uint, int*);
 int             fetchstr(uint, char**);
 void            syscall(void);
 
+// sysfile.c
+int             fdalloc(struct file*);
+
 // timer.c
 void            timerinit(void);
 
@@ -192,6 +203,8 @@ void            switchuvm(struct proc*);
 void            switchkvm(void);
 int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
+int             mappages(pde_t*, void*, uint, uint, int); 
+pte_t*          walkpgdir(pde_t*, const void*, int); 
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

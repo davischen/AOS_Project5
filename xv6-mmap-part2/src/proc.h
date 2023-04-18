@@ -34,19 +34,6 @@ struct context {
 
 enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
-// Per-process mmap
-typedef struct mmap_region {
-  void* start_addr;             // Starting address (page aligned)
-  uint length;                 // Size of mmap
-  int prot;                    // Memory protections
-  int region_type;                   // Region type (anonymous vs. file-backed)
-  int fd;                      // File-backed memory region
-  int offset;                  // Offset into file-backed memory region
-
-  // Next mmap region
-  struct mmap_region* next_region;
-}mmap_region;
-
 // Per-process state
 struct proc {
   uint sz;                     // Size of process memory (bytes)
@@ -62,9 +49,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-  int number_regions;                // jps - number of allocated regions
-  // Mmap regions
-  struct mmap_region *region_head;
 };
 
 // Process memory is laid out contiguously, low addresses first:
@@ -72,4 +56,3 @@ struct proc {
 //   original data and bss
 //   fixed-size stack
 //   expandable heap
-// Flags for mmap

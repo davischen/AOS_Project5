@@ -1,2 +1,1 @@
-File Backed mmap test : Accessing mmap-ed memory region after file close.
-The contents should persist.
+File backed mmap test : accessing mmap-ed memory region after file close. the contents should persist

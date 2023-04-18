@@ -1,4 +1,4 @@
-./tester/xv6-edit-makefile.sh src/Makefile test_1,test_2,test_3,test_4,test_5,test_6,test_7 > src/Makefile.test
+./tester/xv6-edit-makefile.sh src/Makefile test_1,test_2,test_3,test_4,test_5,test_6,test_7,test_7 > src/Makefile.test
 cp -f tests/test_1.c src/test_1.c
 cp -f tests/test_2.c src/test_2.c
 cp -f tests/test_3.c src/test_3.c

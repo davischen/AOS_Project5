@@ -56,6 +56,10 @@ main(int argc, char *argv[])
   char buff[256];
   char fileName[50]="sample.txt";
 
+  // Prepare file for test
+  int fd = open(fileName, O_RDWR|O_CREATE);
+  write(fd, "Hello World.!", 13);
+  close(fd);
 
   // Print the file contents
   if(!PrintFileContents(fileName))
@@ -66,7 +70,7 @@ main(int argc, char *argv[])
 
 
   // Open file in Read-Write mode
-  int fd = open(fileName, O_RDWR);
+  fd = open(fileName, O_RDWR);
   if(fd<=0)
   {
     printf(1, "XV6_TEST_OUTPUT : file open failed %d\n", fd);

@@ -20,8 +20,6 @@ extern void trapret(void);
 
 static void wakeup1(void *chan);
 
-static void free_mmap_regions(struct mmap_region *mmap_regions);
-
 void
 pinit(void)
 {
@@ -144,8 +142,6 @@ userinit(void)
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
-  p->region_head = (struct mmap_region*)0;
-
   // this assignment to p->state lets other cores
   // run this process. the acquire forces the above
   // writes to be visible, and the lock is also needed
@@ -167,7 +163,7 @@ growproc(int n)
 
   sz = curproc->sz;
   if(n > 0){
-    if((sz = allocuvm_proc(curproc->pgdir, sz, sz + n)) == 0)
+    if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
       return -1;
   } else if(n < 0){
     if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
@@ -187,44 +183,14 @@ fork(void)
   int i, pid;
   struct proc *np;
   struct proc *curproc = myproc();
-  struct mmap_region *mmap, *new_mmap, *prev_mmap;
 
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
   }
 
-  // Copy the mmap regions.
-  for(mmap = curproc->region_head, prev_mmap = (struct mmap_region*)0;
-      mmap != (struct mmap_region*)0;
-      mmap = mmap->next_region, prev_mmap = new_mmap){
-    if((new_mmap = kmalloc(sizeof(struct mmap_region))) ==
-       (struct mmap_region*)0){
-      free_mmap_regions(np->region_head);
-      np->region_head = (struct mmap_region*)0;
-      kfree(np->kstack);
-      np->kstack = 0;
-      np->state = UNUSED;
-      return -1;
-    }
-    new_mmap->start_addr = mmap->start_addr;
-    new_mmap->length = mmap->length;
-    new_mmap->prot = mmap->prot;
-    new_mmap->region_type = mmap->region_type;
-    new_mmap->fd = mmap->fd;
-    new_mmap->offset = mmap->offset;
-    new_mmap->next_region = (struct mmap_region*)0;
-    if(prev_mmap != (struct mmap_region*)0){
-      prev_mmap->next_region = new_mmap;
-    } else{
-      np->region_head = new_mmap;
-    }
-  }
-
   // Copy process state from proc.
   if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
-    free_mmap_regions(np->region_head);
-    np->region_head = (struct mmap_region*)0;
     kfree(np->kstack);
     np->kstack = 0;
     np->state = UNUSED;
@@ -329,8 +295,6 @@ wait(void)
         p->name[0] = 0;
         p->killed = 0;
         p->state = UNUSED;
-        free_mmap_regions(p->region_head);
-        p->region_head = (struct mmap_region*)0;
         release(&ptable.lock);
         return pid;
       }
@@ -530,26 +494,6 @@ kill(int pid)
   }
   release(&ptable.lock);
   return -1;
-}
-static void
-free_mmap_regions(struct mmap_region *mmap_regions)
-{
-  struct mmap_region *mmap;
-
-  for(mmap = mmap_regions; mmap != (struct mmap_region*)0;
-      mmap = mmap->next_region){
-    mmap->start_addr = 0;
-    mmap->length = 0;
-    mmap->prot = 0;
-    mmap->region_type = 0;
-    mmap->fd = 0;
-    mmap->offset = 0;
-  }
-  while(mmap_regions != (struct mmap_region*)0){
-    mmap = mmap_regions;
-    mmap_regions = mmap->next_region;
-    kmfree(mmap);
-  }
 }
 
 //PAGEBREAK: 36

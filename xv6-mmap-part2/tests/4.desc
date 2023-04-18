@@ -1,1 +1,1 @@
-Stress test : Testing Anonymous mmap that spans across multiple pages with PROT_WRITE flag
+Stress test : testing anonymous mmap that spans across multiple pages with prot_write flag

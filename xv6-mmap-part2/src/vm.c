@@ -32,7 +32,7 @@ seginit(void)
 // Return the address of the PTE in page table pgdir
 // that corresponds to virtual address va.  If alloc!=0,
 // create any required page table pages.
-pte_t *
+static pte_t *
 walkpgdir(pde_t *pgdir, const void *va, int alloc)
 {
   pde_t *pde;
@@ -57,7 +57,7 @@ walkpgdir(pde_t *pgdir, const void *va, int alloc)
 // Create PTEs for virtual addresses starting at va that refer to
 // physical addresses starting at pa. va and size might not
 // be page-aligned.
-int
+static int
 mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 {
   char *a, *last;
@@ -218,8 +218,8 @@ loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
 
 // Allocate page tables and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
-static int
-allocuvm_ex(pde_t *pgdir, uint oldsz, uint newsz)
+int
+allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
 {
   char *mem;
   uint a;
@@ -246,24 +246,6 @@ allocuvm_ex(pde_t *pgdir, uint oldsz, uint newsz)
     }
   }
   return newsz;
-}
-int
-allocuvm_mmap(pde_t *pgdir, uint oldsz, uint newsz)
-{
-  if(oldsz < MMAPBASE) {
-    panic("allocuvm_mmap: invalid oldsz");
-    return 0;
-  }
-  return allocuvm_ex(pgdir, oldsz, newsz);
-}
-int
-allocuvm_proc(pde_t *pgdir, uint oldsz, uint newsz)
-{
-  if(newsz >= MMAPBASE) {
-    panic("allocuvm_proc: invalid newsz");
-    return 0;
-  }
-  return allocuvm_ex(pgdir, oldsz, newsz);
 }
 
 // Deallocate user pages to bring the process size from oldsz to

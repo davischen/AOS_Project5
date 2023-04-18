@@ -10,11 +10,11 @@
 #include "mmu.h"
 #include "mman.h"
 
-/* Testing Anonymous mmap with PROT_WRITE*/
+/* Testing Anonymous mmap without PROT_WRITE*/
 
 int
 main(int argc, char *argv[])
-{
+{  
   int size =  10;  /* we need 10 bytes */
  
   char *addr = (char*)0x4000;

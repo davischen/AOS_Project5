@@ -36,9 +36,7 @@ pagefault_handler(struct trapframe *tf)
   // Start -- Required debugging statement -----
   cprintf("============in pagefault_handler============\n");
   cprintf("pid %d %s: trap %d err %d on cpu %d "
-  "eip 0x%x addr 0x%x\n",
-  curproc->pid, curproc->name, tf->trapno,
-  tf->err, cpuid(), tf->eip, fault_addr);
+  "eip 0x%x addr 0x%x\n", curproc->pid, curproc->name, tf->trapno, tf->err, cpuid(), tf->eip, fault_addr);
   // End -- Required debugging statement ----
 
   // Validate that the faulting address belongs to a valid mmap region
@@ -98,15 +96,16 @@ pagefault_handler(struct trapframe *tf)
 
     switchuvm(curproc);
 
-    // If we are performing file-backed mmap, seek to where we need to in the
-    // file and then read it into the memory location allocated above (mem)
+    // checking if the region type of the page that caused the fault is MAP_FILE
     if (mmap_node->region_type == MAP_FILE)
     {
+      //checks if the file descriptor for the file being accessed exists in the current process's file descriptor table.
       if (curproc->ofile[mmap_node->fd])
       {
+        //the code seeks to the appropriate offset in the file and reads the required data into memory.
         fileseek(curproc->ofile[mmap_node->fd], mmap_node->offset);
         fileread(curproc->ofile[mmap_node->fd], mem, mmap_node->length);
-        //Clear the dirty bit after read:
+        //the code clears the dirty bit of the page table entry corresponding to the page that caused the fault. 
           pde_t* pde = &(myproc()->pgdir)[PDX(mmap_node->start_addr)];
           pte_t* pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
           pte_t* pte = &pgtab[PTX(mmap_node->start_addr)];
@@ -115,16 +114,20 @@ pagefault_handler(struct trapframe *tf)
       }
     }
   }
-  else  //Page fault on a non-allocated address
+  else  
   {
+    //If the page fault did not occur on a memory-mapped file
+    //then the code prints an error message and sets the killed flag of the current process to 1.
     error:
       if(myproc() == 0 || (tf->cs&3) == 0){
-        // In kernel, it must be our mistake.
+        // In kernel
+        //The error message contains information about the process ID, name, the type of trap, 
+        //and the address that caused the page fault.
         cprintf("unexpected trap %d from cpu %d eip %x (cr2=0x%x)\n",
                 tf->trapno, cpuid(), tf->eip, rcr2());
         panic("trap");
       }
-      // In user space, assume process misbehaved.
+      // In user space
       cprintf("pid %d %s: trap %d err %d on cpu %d "
               "eip 0x%x addr 0x%x--kill proc\n",
               myproc()->pid, myproc()->name, tf->trapno,

@@ -49,17 +49,17 @@ static void search_region(struct proc *curproc ,void *addr, uint length)
         fileclose(curproc->ofile[next_node->fd]);
         curproc->ofile[next_node->fd] = 0;
       }
-      remove_region(next_node, curnode);
       if(next_node->next_mmap_region != (struct mmap_region*)0) {
         size = next_node->next_mmap_region->length;
         curnode->next_mmap_region->length = size;
       }
+      remove_region(next_node, curnode);
     }
     curnode = next_node;
     next_node = curnode->next_mmap_region;
   }
 }
-int
+/*int
 munmap2(void *addr, uint length)
 {
   struct mmap_region *mmap, *prev_mmap;
@@ -80,6 +80,22 @@ munmap2(void *addr, uint length)
     }
   }
   return -1;
+}*/
+static mmap_region* mmap_region_alloc(void* addr, uint length, int flags, int offset, int prot)
+{
+  //allocate new region memory
+  mmap_region* new_region = (mmap_region*)kmalloc(sizeof(mmap_region));
+  if(new_region == NULL)
+    return NULL;
+
+  //store the mapping information for the newly allocated memory region
+  new_region->start_addr = addr;
+  new_region->length = length;
+  new_region->region_type = flags;
+  new_region->offset = offset;
+  new_region->prot = prot;
+  new_region->next_mmap_region = 0;
+  return new_region;
 }
 void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
 {
@@ -108,9 +124,9 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
   //read pagetable of current process
   switchuvm(curproc);
 
-  //allocate new region memory
-  mmap_region* new_region = (mmap_region*)kmalloc(sizeof(mmap_region));
   //if allocation fails
+  addr = (void*)(PGROUNDDOWN(oldsz)+ MMAPBASE );//
+  mmap_region* new_region = mmap_region_alloc(addr, length, flags, offset, prot);
   if(new_region == NULL)
   {
     //to free up previously new process size
@@ -118,21 +134,12 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     return (void*)-1;
   }
 
-  //store the mapping information for the newly allocated memory region
-  addr = (void*)(PGROUNDDOWN(oldsz)+ MMAPBASE );//
-  new_region->start_addr = addr;
-  new_region->length = length;
-  new_region->region_type = flags;
-  new_region->offset = offset;
-  new_region->prot = prot;
-  new_region->next_mmap_region = 0;
-
   //check the flags and file descriptor argument
-  
   if (flags == MAP_ANONYMOUS)
   {
     if (fd != -1) //fd must be -1 
     {
+      kmfree(new_region);
       return (void*)-1;
     }
   }
@@ -141,14 +148,24 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     if (fd > -1)
     {
       if((fd=fdalloc(curproc->ofile[fd])) < 0)
+      {
+        kmfree(new_region);
         return (void*)-1;
+      }
       filedup(curproc->ofile[fd]);
       new_region->fd=fd;
     }
     else
     {
+      kmfree(new_region);
       return (void*)-1;
     }
+  }
+
+  if (curproc->number_regions == MAX_MMAP_REGIONS) {
+    kmfree(new_region);
+    deallocuvm(curproc->pgdir, newsz, oldsz);
+    return (void*)-1;
   }
 
   // if it is the first region in current process, set header point to new region
@@ -212,6 +229,7 @@ int munmap(void *addr, uint length)
   
   return 0;
 }
+
 int msync (void* start_addr, uint length)
 {
   struct proc *curproc = myproc();
@@ -222,25 +240,31 @@ int msync (void* start_addr, uint length)
     return -1;
   }
 
-  mmap_region *itr = curproc->mmap_regions_head;
-
-  while(itr)
+  mmap_region *curnode = curproc->mmap_regions_head;
+  //iterates over all the memory mapped regions of the process using a linked list of mmap regions
+  while(curnode)
   {
-    if(itr->start_addr == start_addr && itr->length == length)
+    //checks whether any regions have been allocated to the process.
+    if(curnode->start_addr == start_addr && curnode->length == length)
     {
-      //check the address was allocated
+      if(curnode->fd<0)
+      {
+        return -1;
+      }
+      //If it is marked as dirty
+      //the memory region has been modified and needs to be written back to the file on disk.
       pte_t* ret = walkpgdir(curproc->pgdir, start_addr, 0);
       if((uint)ret & PTE_D)
       {
         //do nothing
       }
 
-      fileseek(curproc->ofile[itr->fd], itr->offset);
-      filewrite(curproc->ofile[itr->fd], start_addr, length);
+      fileseek(curproc->ofile[curnode->fd], curnode->offset + (start_addr - curnode->start_addr));
+      filewrite(curproc->ofile[curnode->fd], start_addr, length);
       return 0;
     }
 
-    itr = itr->next_mmap_region;
+    curnode = curnode->next_mmap_region;
   }
   
   return -1; //No match

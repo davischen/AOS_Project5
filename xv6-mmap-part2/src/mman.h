@@ -9,3 +9,5 @@
 #define WRITEABLE 1
 #define ANONYMOUS 0
 #define FILEBACKED 1
+
+#define MAX_MMAP_REGIONS 64

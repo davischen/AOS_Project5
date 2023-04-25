@@ -59,7 +59,30 @@ static void search_region(struct proc *curproc ,void *addr, uint length)
     next_node = curnode->next_mmap_region;
   }
 }
-/*int
+/*
+int
+munmap(void *addr, uint length)
+{
+  struct mmap_region *mmap, *prev_mmap;
+  struct proc *curproc = myproc();
+
+  for (mmap = curproc->mmap_regions, prev_mmap = (struct mmap_region*)0;
+       mmap != (struct mmap_region*)0;
+       prev_mmap = mmap, mmap = mmap->next_mmap_region) {
+    if ((uint)addr == (uint)mmap->start_addr && length == mmap->length) {
+      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
+      if (prev_mmap != (struct mmap_region*)0) {
+        prev_mmap->next_mmap_region = mmap->next_mmap_region;
+      } else {
+        curproc->mmap_regions = mmap->next_mmap_region;
+      }
+      kmfree(mmap);
+      return 0;
+    }
+  }
+  return -1;
+}
+int
 munmap2(void *addr, uint length)
 {
   struct mmap_region *mmap, *prev_mmap;
@@ -97,17 +120,85 @@ static mmap_region* mmap_region_alloc(void* addr, uint length, int flags, int of
   new_region->next_mmap_region = 0;
   return new_region;
 }
+/*void*
+mmap2(void* addr, uint length, int prot, int flags, int fd, int offset)
+{
+  struct mmap_region *mmap;
+  struct proc *curproc = myproc();
+  int bad_addr;
+
+  addr = (void*)PGROUNDUP((uint)addr + MMAPBASE);
+  if ((uint)addr >= KERNBASE ||
+      (uint)addr + PGROUNDUP(length) >= KERNBASE) {
+    addr = (void*)MMAPBASE;
+    if ((uint)addr + PGROUNDUP(length) >= KERNBASE) {
+      return (void*)0;
+    }
+  }
+  for (mmap = curproc->mmap_regions; mmap != (struct mmap_region*)0
+         ;) {
+    bad_addr = 0;
+    if ((uint)addr >= (uint)mmap->start_addr &&
+        (uint)mmap->start_addr + PGROUNDUP(mmap->length) >= (uint)addr) {
+      bad_addr = 1;
+    }
+    if ((uint)mmap->start_addr >= (uint)addr &&
+        (uint)addr + PGROUNDUP(length) >= (uint)mmap->start_addr) {
+      bad_addr = 1;
+    }
+    if (bad_addr) {
+      addr = (void*)(mmap->start_addr + PGROUNDUP(mmap->length) + PGSIZE);
+      mmap = curproc->mmap_regions;
+      continue;
+    }
+    mmap = mmap->next_mmap_region;
+  }
+  if ((uint)addr >= KERNBASE ||
+      (uint)addr + PGROUNDUP(length) >= KERNBASE) {
+    return (void*)0;
+  }
+  if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
+    return (void*)0;
+  }
+  if ((mmap = kmalloc(sizeof(struct mmap_region))) ==
+      (struct mmap_region*)0) {
+    deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
+    return (void*)0;
+  }
+  mmap->start_addr = (uint)addr;
+  mmap->length = length;
+  mmap->prot = prot;
+  mmap->flags = flags;
+  mmap->fd = fd;
+  mmap->offset = offset;
+  mmap->next_mmap_region = curproc->mmap_regions;
+  curproc->mmap_regions = mmap;
+  return addr;
+}*/
+
 void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
 {
   //it checks if the requested address is page-aligned
   if ((uint)addr % PGSIZE != 0) {
     return (void*)-1;
   }
+
   //check argument inputs 
   if (addr < (void*)0 || addr == (void*)KERNBASE || addr > (void*)KERNBASE || length < 1)
   {
     return (void*)-1;
   }
+  //==========new code==========
+  //if allocation fails
+  addr = (void*)(PGROUNDDOWN((uint)addr)+ MMAPBASE );//replace addr with oldsz
+  if (addr >= (void *) KERNBASE ||
+      addr + PGROUNDUP(length) >= (void *) KERNBASE) {
+    addr = (void*)MMAPBASE;
+    if (addr + PGROUNDUP(length) >= (void *) KERNBASE) {
+      return (void*)0;
+    }
+  }
+  //==========new code==========
 
   //get current point
   struct proc *curproc = myproc();
@@ -124,8 +215,6 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
   //read pagetable of current process
   switchuvm(curproc);
 
-  //if allocation fails
-  addr = (void*)(PGROUNDDOWN(oldsz)+ MMAPBASE );//
   mmap_region* new_region = mmap_region_alloc(addr, length, flags, offset, prot);
   if(new_region == NULL)
   {
@@ -171,6 +260,7 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     return (void*)-1;
   }
 
+
   // if it is the first region in current process, set header point to new region
   if(curproc->number_regions == 0)
     curproc->mmap_regions_head = new_region;
@@ -182,11 +272,16 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     while(curnode->next_mmap_region != 0)
     {
       //from starting address to iterate all mapped list
-      if(addr == curnode->start_addr)
+      //==========new code==========
+      if((addr >= curnode->start_addr  &&
+        (uint)curnode->start_addr + PGROUNDUP(curnode->length) >= (uint)addr) || ((uint)curnode->start_addr >= (uint)addr &&
+        (uint)addr + PGROUNDUP(length) >= (uint)curnode->start_addr))
       {
         addr += PGROUNDDOWN(PGSIZE+curnode->length);
         curnode = curproc->mmap_regions_head;
+        continue;
       }
+      //==========new code==========
       //check if addr is larger than upper limit (KERNBASE)
       else if(addr == (void*)KERNBASE || addr > (void*)KERNBASE)
       {
@@ -202,8 +297,22 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     if (addr == curnode->start_addr)
       addr += PGROUNDDOWN(PGSIZE+curnode->length);
     curnode->next_mmap_region = new_region;
-  }
 
+    //==========new code==========
+    if (addr >= (void*) KERNBASE ||
+        addr + PGROUNDUP(length) >= (void*) KERNBASE) {
+      return (void*)0;
+    }
+    if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
+      return (void*)0;
+    }
+    if ((curnode = kmalloc(sizeof(struct mmap_region))) ==
+        (struct mmap_region*)0) {
+      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
+      return (void*)0;
+    }
+    //==========new code==========
+  }
   //the number of regions add 1 to increment region count
   curproc->number_regions++;
   //assign new region's starting address

@@ -117,9 +117,9 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
   uint newsz = curproc->sz + length;
 
   // Expand process size
-  //curproc->sz = newsz;
-  if((curproc->sz = allocuvm_mmap(curproc->pgdir, oldsz, newsz))==0)
-     return (void*)-1;
+  curproc->sz = newsz;
+  //if((curproc->sz = allocuvm_mmap(curproc->pgdir, oldsz, newsz))==0)
+  //   return (void*)-1;
 
   //read pagetable of current process
   switchuvm(curproc);
@@ -139,6 +139,7 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
   {
     if (fd != -1) //fd must be -1 
     {
+      deallocuvm(curproc->pgdir, newsz, oldsz);
       kmfree(new_region);
       return (void*)-1;
     }
@@ -149,6 +150,7 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     {
       if((fd=fdalloc(curproc->ofile[fd])) < 0)
       {
+        deallocuvm(curproc->pgdir, newsz, oldsz);
         kmfree(new_region);
         return (void*)-1;
       }
@@ -157,14 +159,15 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     }
     else
     {
+      deallocuvm(curproc->pgdir, newsz, oldsz);
       kmfree(new_region);
       return (void*)-1;
     }
   }
 
   if (curproc->number_regions == MAX_MMAP_REGIONS) {
-    kmfree(new_region);
     deallocuvm(curproc->pgdir, newsz, oldsz);
+    kmfree(new_region);
     return (void*)-1;
   }
 
@@ -188,8 +191,8 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
       else if(addr == (void*)KERNBASE || addr > (void*)KERNBASE)
       {
         //fail to allocate new region
-        kmfree(new_region);
         deallocuvm(curproc->pgdir, newsz, oldsz);
+        kmfree(new_region);
         return (void*)-1;
       }
       //move to next until last region
@@ -239,7 +242,7 @@ int msync (void* start_addr, uint length)
   {
     return -1;
   }
-
+  int result=0;
   mmap_region *curnode = curproc->mmap_regions_head;
   //iterates over all the memory mapped regions of the process using a linked list of mmap regions
   while(curnode)
@@ -259,8 +262,14 @@ int msync (void* start_addr, uint length)
         //do nothing
       }
 
-      fileseek(curproc->ofile[curnode->fd], curnode->offset + (start_addr - curnode->start_addr));
-      filewrite(curproc->ofile[curnode->fd], start_addr, length);
+      if((result=fileseek(curproc->ofile[curnode->fd], curnode->offset + (start_addr - curnode->start_addr)))==-1)
+      {
+        return -1;
+      }
+      if((result=filewrite(curproc->ofile[curnode->fd], start_addr, length))==-1)
+      {
+        return -1;
+      }
       return 0;
     }
 

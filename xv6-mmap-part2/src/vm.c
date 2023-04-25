@@ -250,10 +250,10 @@ allocuvm_ex(pde_t *pgdir, uint oldsz, uint newsz)
 int
 allocuvm_mmap(pde_t *pgdir, uint oldsz, uint newsz)
 {
-  /*if(oldsz < MMAPBASE) {
+  if(oldsz < MMAPBASE) {
     panic("allocuvm_mmap: invalid oldsz");
     return 0;
-  }*/
+  }
   return allocuvm_ex(pgdir, oldsz, newsz);
 }
 int

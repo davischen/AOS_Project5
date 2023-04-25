@@ -31,32 +31,37 @@ void
 pagefault_handler(struct trapframe *tf)
 {
   struct proc *curproc = myproc();
-  uint fault_addr = rcr2(); //Control Register 2, holds the faulting page address.
+  //get the address of the page that caused the fault,
+  uint fault_addr = rcr2();
 
   // Start -- Required debugging statement -----
-  cprintf("============in pagefault_handler============\n");
+  cprintf("============trap pagefault_handler============\n");
   cprintf("pid %d %s: trap %d err %d on cpu %d "
-  "eip 0x%x addr 0x%x\n", curproc->pid, curproc->name, tf->trapno, tf->err, cpuid(), tf->eip, fault_addr);
+  "eip 0x%x addr 0x%x--trap pagefault_handler\n", curproc->pid, curproc->name, tf->trapno, tf->err, cpuid(), tf->eip, fault_addr);
   // End -- Required debugging statement ----
 
-  // Validate that the faulting address belongs to a valid mmap region
-  // (check curproc linked list)
+  //iterating over the linked list of memory-mapped regions (mmap_regions_head) 
+  //and checking if the faulting address falls within the bounds of any of the regions.
+  //the faulting address belongs to a valid memory-mapped region of the process
   int valid = 0;
   mmap_region *mmap_node = curproc->mmap_regions_head;
 
-  //round the faulting address down to the page start.
+  //round down the faulting address to the start of the page.
   fault_addr = PGROUNDDOWN(fault_addr);
 
+  cprintf("============for loop============\n");
   while(mmap_node)
   {
     //if (fault_addr == (uint)mmap_node->start_addr)
     if ((uint)(mmap_node->start_addr) <= fault_addr && (uint)(mmap_node->start_addr + mmap_node->length) > fault_addr)
     { 
+      cprintf("============check prot_write============\n");
+      //If a valid memory-mapped region is found, the code checks if the page fault was caused by a write operation
       if ((mmap_node->prot & PROT_WRITE) || !(tf->err & T_ERR_PGFLT_W)) 
       {
         valid = 1;
       }
-      break; //leave the loop once we found a valid entry
+      break; 
     }
     else
     {
@@ -64,21 +69,25 @@ pagefault_handler(struct trapframe *tf)
     }
   }
 
-  // Map a single page around the faulting address.
-  // Allocation based off of allocuvm from vm.c
   if (valid == 1)
   {
+    //cprintf("============valid is ============\n");
     char *mem;
     mem = kalloc();
 
     if(mem == 0)
     {
+      cprintf("============check mem failure============\n");
+      deallocuvm(curproc->pgdir,fault_addr+PGSIZE,fault_addr);
+      kfree(mem);
       goto error;
     }
     memset(mem, 0, PGSIZE);
-
-    // determine protection bits needed for mappages() call
+    
+    // If the mmap region does not have write permission, then the page table entry is marked with only user permission.
+    // Otherwise, it is marked with both user and write permission. 
     int perm;
+    cprintf("============write permissions============\n");
     if (mmap_node->prot == PROT_WRITE)
     {
       perm = PTE_W|PTE_U; //give write permissions
@@ -87,9 +96,12 @@ pagefault_handler(struct trapframe *tf)
     {
       perm = PTE_U; //do not give write permissions
     }
+    //the mappages() function is used to map the page to the faulting virtual address in the current process’s page table.
 
+    cprintf("============check mappages============\n");
     if(mappages(curproc->pgdir, (char*)fault_addr, PGSIZE, V2P(mem), perm) < 0)
     {
+      deallocuvm(curproc->pgdir,fault_addr+PGSIZE,fault_addr);
       kfree(mem);
       goto error;
     }
@@ -99,12 +111,27 @@ pagefault_handler(struct trapframe *tf)
     // checking if the region type of the page that caused the fault is MAP_FILE
     if (mmap_node->region_type == MAP_FILE)
     {
+      cprintf("============MAP_FILE============\n");
       //checks if the file descriptor for the file being accessed exists in the current process's file descriptor table.
       if (curproc->ofile[mmap_node->fd])
       {
+        cprintf("============check file============\n");
+        int result=0;
         //the code seeks to the appropriate offset in the file and reads the required data into memory.
-        fileseek(curproc->ofile[mmap_node->fd], mmap_node->offset);
-        fileread(curproc->ofile[mmap_node->fd], mem, mmap_node->length);
+        if((result=fileseek(curproc->ofile[mmap_node->fd], mmap_node->offset))==-1)
+        {
+          deallocuvm(curproc->pgdir,fault_addr+PGSIZE,fault_addr);
+          kfree(mem);
+          goto error;
+        }
+        cprintf("============check file 2============\n");
+        if((result=fileread(curproc->ofile[mmap_node->fd], mem, mmap_node->length))==-1)
+        {
+          deallocuvm(curproc->pgdir,fault_addr+PGSIZE,fault_addr);
+          kfree(mem);
+          goto error;
+        }
+        cprintf("============change flag============\n");
         //the code clears the dirty bit of the page table entry corresponding to the page that caused the fault. 
           pde_t* pde = &(myproc()->pgdir)[PDX(mmap_node->start_addr)];
           pte_t* pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
@@ -119,6 +146,7 @@ pagefault_handler(struct trapframe *tf)
     //If the page fault did not occur on a memory-mapped file
     //then the code prints an error message and sets the killed flag of the current process to 1.
     error:
+      cprintf("============valid failure or not exists in mmap region list============\n");
       if(myproc() == 0 || (tf->cs&3) == 0){
         // In kernel
         //The error message contains information about the process ID, name, the type of trap, 

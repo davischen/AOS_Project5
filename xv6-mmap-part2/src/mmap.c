@@ -240,7 +240,9 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
 
   // if it is the first region in current process, set header point to new region
   if(curproc->number_regions == 0)
+  {
     curproc->mmap_regions_head = new_region;
+  }
   // else iterate over the mapped list and check memory region in boundary of current process
   else
   {
@@ -248,150 +250,6 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     mmap_region* curnode = curproc->mmap_regions_head;
     while(curnode->next_mmap_region != 0)
     {
-      //from starting address to iterate all mapped list
-      if(addr == curnode->start_addr)
-      {
-        addr += PGROUNDDOWN(PGSIZE+curnode->length);
-        curnode = curproc->mmap_regions_head;
-      }
-      //check if addr is larger than upper limit (KERNBASE)
-      else if(addr == (void*)KERNBASE || addr > (void*)KERNBASE)
-      {
-        //fail to allocate new region
-        deallocuvm(curproc->pgdir, newsz, oldsz);
-        kmfree(new_region);
-        return (void*)-1;
-      }
-      //move to next until last region
-      curnode = curnode->next_mmap_region;
-    }
-    //
-    if (addr == curnode->start_addr)
-      addr += PGROUNDDOWN(PGSIZE+curnode->length);
-    curnode->next_mmap_region = new_region;
-
-        //==========new code==========
-    // the starting address of the memory mapping request or the starting address plus the length of the mapping exceeds the kernel's virtual address space (KERNBASE)
-    if (addr >= (void*) KERNBASE ||
-        addr + PGROUNDUP(length) >= (void*) KERNBASE) {
-      return (void*)0;
-    }
-    // the memory allocation failed, so the function returns a null pointer.
-    if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
-      return (void*)0;
-    }
-    //if kmalloc
-    /*if ((curnode = kmalloc(sizeof(struct mmap_region))) ==
-        (struct mmap_region*)0) {
-      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
-      return (void*)0;
-    }*/
-    //==========new code==========
-  }
-
-  //the number of regions add 1 to increment region count
-  curproc->number_regions++;
-  //assign new region's starting address
-  new_region->start_addr = addr;
-  return new_region->start_addr;  
-}
-
-void *mmap_bak(void *addr, uint length, int prot, int flags, int fd, int offset)
-{
-  //it checks if the requested address is page-aligned
-  if ((uint)addr % PGSIZE != 0) {
-    return (void*)-1;
-  }
-
-  //check argument inputs 
-  if (addr < (void*)0 || addr == (void*)KERNBASE || addr > (void*)KERNBASE || length < 1)
-  {
-    return (void*)-1;
-  }
-  
-  //get current point
-  struct proc *curproc = myproc();
-  //it gets the current process size
-  uint oldsz = curproc->sz;
-  //adds the requested length to the new size of the process
-  uint newsz = curproc->sz + length;
-
-  // Expand process size
-  curproc->sz = newsz;
-  //if((curproc->sz = allocuvm_mmap(curproc->pgdir, oldsz, newsz))==0)
-  //   return (void*)-1;
-
-  //read pagetable of current process
-  switchuvm(curproc);
-  //==========new code==========
-  //if allocation fails
-  addr = (void*)(PGROUNDDOWN((uint)oldsz)+ MMAPBASE );//replace addr with oldsz
-  if (addr >= (void *) KERNBASE ||
-      addr + PGROUNDUP(length) >= (void *) KERNBASE) {
-    addr = (void*)MMAPBASE;
-    if (addr + PGROUNDUP(length) >= (void *) KERNBASE) {
-      return (void*)0;
-    }
-  }
-  //==========new code==========
-
-  mmap_region* new_region = mmap_region_alloc(addr, length, flags, offset, prot);
-  if(new_region == NULL)
-  {
-    //to free up previously new process size
-    deallocuvm(curproc->pgdir, newsz, oldsz);
-    return (void*)-1;
-  }
-
-  //check the flags and file descriptor argument
-  if (flags == MAP_ANONYMOUS)
-  {
-    if (fd != -1) //fd must be -1 
-    {
-      deallocuvm(curproc->pgdir, newsz, oldsz);
-      kmfree(new_region);
-      return (void*)-1;
-    }
-  }
-  else if (flags == MAP_FILE)
-  {
-    if (fd > -1)
-    {
-      if((fd=fdalloc(curproc->ofile[fd])) < 0)
-      {
-        deallocuvm(curproc->pgdir, newsz, oldsz);
-        kmfree(new_region);
-        return (void*)-1;
-      }
-      filedup(curproc->ofile[fd]);
-      new_region->fd=fd;
-    }
-    else
-    {
-      deallocuvm(curproc->pgdir, newsz, oldsz);
-      kmfree(new_region);
-      return (void*)-1;
-    }
-  }
-
-  if (curproc->number_regions == MAX_MMAP_REGIONS) {
-    deallocuvm(curproc->pgdir, newsz, oldsz);
-    kmfree(new_region);
-    return (void*)-1;
-  }
-
-
-  // if it is the first region in current process, set header point to new region
-  if(curproc->number_regions == 0)
-    curproc->mmap_regions_head = new_region;
-  // else iterate over the mapped list and check memory region in boundary of current process
-  else
-  {
-    //it iterates over the mapped list and checks whether the memory region is in the boundary of the current process.
-    mmap_region* curnode = curproc->mmap_regions_head;
-    while(curnode->next_mmap_region != 0)
-    {
-      //from starting address to iterate all mapped list
       //==========new code==========
       // the requested region overlaps with the current mapped region
       // there is any overlap between the existing mmap region and the new region being requested
@@ -399,14 +257,23 @@ void *mmap_bak(void *addr, uint length, int prot, int flags, int fd, int offset)
         (uint)curnode->start_addr + PGROUNDUP(curnode->length) >= (uint)addr) || ((uint)curnode->start_addr >= (uint)addr &&
         (uint)addr + PGROUNDUP(length) >= (uint)curnode->start_addr))
       {
-        //cprintf("addr += PGROUNDDOWN(PGSIZE+curnode->length)");
-        addr += PGROUNDDOWN(PGSIZE+curnode->length);
+        addr = (void*)(curnode->start_addr + PGROUNDUP(curnode->length) + PGSIZE);
         curnode = curproc->mmap_regions_head;
         continue;
       }
+      else
       //==========new code==========
+      //from starting address to iterate all mapped list
+      if(addr == curnode->start_addr)
+      {
+        //addr += PGROUNDDOWN(PGSIZE+curnode->length);
+        addr = (void*)(curnode->start_addr + PGROUNDUP(curnode->length) + PGSIZE);
+        curnode = curproc->mmap_regions_head;
+        continue;
+      }
       //check if addr is larger than upper limit (KERNBASE)
-      else if(addr == (void*)KERNBASE || addr > (void*)KERNBASE)
+      //else if(addr == (void*)KERNBASE || addr > (void*)KERNBASE)
+      else if(addr >= (void*)KERNBASE || addr + PGROUNDUP(length) >=  (void*)KERNBASE)
       {
         //fail to allocate new region
         deallocuvm(curproc->pgdir, newsz, oldsz);
@@ -416,37 +283,27 @@ void *mmap_bak(void *addr, uint length, int prot, int flags, int fd, int offset)
       //move to next until last region
       curnode = curnode->next_mmap_region;
     }
-    //
+    
     if (addr == curnode->start_addr)
       addr += PGROUNDDOWN(PGSIZE+curnode->length);
     curnode->next_mmap_region = new_region;
-
     //==========new code==========
-    // the starting address of the memory mapping request or the starting address plus the length of the mapping exceeds the kernel's virtual address space (KERNBASE)
-    if (addr >= (void*) KERNBASE ||
-        addr + PGROUNDUP(length) >= (void*) KERNBASE) {
+    if ((uint)addr >= KERNBASE ||
+        (uint)addr + PGROUNDUP(length) >= KERNBASE) {
       return (void*)0;
     }
-    // the memory allocation failed, so the function returns a null pointer.
     if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
       return (void*)0;
     }
-    //if kmalloc
-    /*if ((curnode = kmalloc(sizeof(struct mmap_region))) ==
-        (struct mmap_region*)0) {
-      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
-      return (void*)0;
-    }*/
     //==========new code==========
   }
+
   //the number of regions add 1 to increment region count
   curproc->number_regions++;
   //assign new region's starting address
   new_region->start_addr = addr;
   return new_region->start_addr;  
 }
-
-
 int munmap(void *addr, uint length)
 {
   /*if (addr == NULL ||  length == 0)

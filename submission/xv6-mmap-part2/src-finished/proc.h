@@ -63,7 +63,7 @@ struct proc {
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
 
-  int number_regions;                // jps - number of allocated regions
+  int number_regions;                //number of allocated regions
   // Mmap regions
   struct mmap_region *mmap_regions_head;
 };

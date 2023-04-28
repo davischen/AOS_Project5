@@ -97,6 +97,62 @@ static mmap_region* mmap_region_alloc(void* addr, uint length, int flags, int of
   new_region->next_mmap_region = 0;
   return new_region;
 }
+/*void*
+mmap(void* addr, uint length, int prot, int flags, int fd, int offset)
+{
+  struct mmap_region *mmap;
+  struct proc *curproc = myproc();
+  int bad_addr;
+
+  addr = (void*)PGROUNDUP((uint)addr + MMAPBASE);
+  if ((uint)addr >= KERNBASE ||
+      (uint)addr + PGROUNDUP(length) >= KERNBASE) {
+    addr = (void*)MMAPBASE;
+    if ((uint)addr + PGROUNDUP(length) >= KERNBASE) {
+      return (void*)0;
+    }
+  }
+  for (mmap = curproc->mmap_regions; mmap != (struct mmap_region*)0
+         ;) {
+    bad_addr = 0;
+    if ((uint)addr >= (uint)mmap->start_addr &&
+        (uint)mmap->start_addr + PGROUNDUP(mmap->length) >= (uint)addr) {
+      bad_addr = 1;
+    }
+    if ((uint)mmap->start_addr >= (uint)addr &&
+        (uint)addr + PGROUNDUP(length) >= (uint)mmap->start_addr) {
+      bad_addr = 1;
+    }
+    if (bad_addr) {
+      addr = (void*)(mmap->start_addr + PGROUNDUP(mmap->length) + PGSIZE);
+      mmap = curproc->mmap_regions;
+      continue;
+    }
+    mmap = mmap->next_mmap_region;
+  }
+  if ((uint)addr >= KERNBASE ||
+      (uint)addr + PGROUNDUP(length) >= KERNBASE) {
+    return (void*)0;
+  }
+  if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
+    return (void*)0;
+  }
+  if ((mmap = kmalloc(sizeof(struct mmap_region))) ==
+      (struct mmap_region*)0) {
+    deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
+    return (void*)0;
+  }
+  mmap->start_addr = (uint)addr;
+  mmap->length = length;
+  mmap->prot = prot;
+  mmap->flags = flags;
+  mmap->fd = fd;
+  mmap->offset = offset;
+  mmap->next_mmap_region = curproc->mmap_regions;
+  curproc->mmap_regions = mmap;
+  return addr;
+}*/
+
 void *mmap_old(void *addr, uint length, int prot, int flags, int fd, int offset)
 {
   //it checks if the requested address is page-aligned
@@ -210,6 +266,7 @@ void *mmap_old(void *addr, uint length, int prot, int flags, int fd, int offset)
   new_region->start_addr = addr;
   return new_region->start_addr;  
 }
+
 void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
 {
   //it checks if the requested address is page-aligned

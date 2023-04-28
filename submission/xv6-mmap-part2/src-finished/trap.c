@@ -15,18 +15,6 @@ extern uint vectors[];  // in vectors.S: array of 256 entry pointers
 struct spinlock tickslock;
 uint ticks;
 
-
-// jps - pagefault_handler()
-/*
- *  This function helps implement the lazy mmap allocation required for this project.
- *  When a pagefault occurs, this function will be called and the mmap linked list
- *  will be searched to see if the faulting address has been decleared as allocated.
- *  If it has been "allocated", the page containing the faulting address will acutally
- *  be allocated to the process.
- * 
- *  INPUT: struct trapframe *tf - the trapframe for a faulting address
- *  OUTPUT: void
- */
 void
 pagefault_handler(struct trapframe *tf)
 {
@@ -226,7 +214,7 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
-  case T_PGFLT: //jps - added pagefault check in the trap switch statement
+  case T_PGFLT: //added pagefault check in the trap switch statement
     pagefault_handler(tf);
     break;
   //PAGEBREAK: 13

@@ -364,6 +364,8 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     {
       //from starting address to iterate all mapped list
       //==========new code==========
+      // the requested region overlaps with the current mapped region
+      // there is any overlap between the existing mmap region and the new region being requested
       if((addr >= curnode->start_addr  &&
         (uint)curnode->start_addr + PGROUNDUP(curnode->length) >= (uint)addr) || ((uint)curnode->start_addr >= (uint)addr &&
         (uint)addr + PGROUNDUP(length) >= (uint)curnode->start_addr))
@@ -391,18 +393,21 @@ void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
     curnode->next_mmap_region = new_region;
 
     //==========new code==========
+    // the starting address of the memory mapping request or the starting address plus the length of the mapping exceeds the kernel's virtual address space (KERNBASE)
     if (addr >= (void*) KERNBASE ||
         addr + PGROUNDUP(length) >= (void*) KERNBASE) {
       return (void*)0;
     }
+    // the memory allocation failed, so the function returns a null pointer.
     if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
       return (void*)0;
     }
-    if ((curnode = kmalloc(sizeof(struct mmap_region))) ==
+    //if kmalloc
+    /*if ((curnode = kmalloc(sizeof(struct mmap_region))) ==
         (struct mmap_region*)0) {
       deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
       return (void*)0;
-    }
+    }*/
     //==========new code==========
   }
   //the number of regions add 1 to increment region count

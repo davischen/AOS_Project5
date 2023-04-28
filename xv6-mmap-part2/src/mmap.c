@@ -153,7 +153,7 @@ mmap(void* addr, uint length, int prot, int flags, int fd, int offset)
   return addr;
 }*/
 
-void *mmap_old(void *addr, uint length, int prot, int flags, int fd, int offset)
+void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
 {
   //it checks if the requested address is page-aligned
   if ((uint)addr % PGSIZE != 0) {
@@ -179,6 +179,17 @@ void *mmap_old(void *addr, uint length, int prot, int flags, int fd, int offset)
 
   //read pagetable of current process
   switchuvm(curproc);
+  //==========new code==========
+  //if allocation fails
+  addr = (void*)(PGROUNDDOWN((uint)oldsz)+ MMAPBASE );//replace addr with oldsz
+  if (addr >= (void *) KERNBASE ||
+      addr + PGROUNDUP(length) >= (void *) KERNBASE) {
+    addr = (void*)MMAPBASE;
+    if (addr + PGROUNDUP(length) >= (void *) KERNBASE) {
+      return (void*)0;
+    }
+  }
+  //==========new code==========
 
   //if allocation fails
   addr = (void*)(PGROUNDDOWN(oldsz)+ MMAPBASE );//
@@ -258,6 +269,24 @@ void *mmap_old(void *addr, uint length, int prot, int flags, int fd, int offset)
     if (addr == curnode->start_addr)
       addr += PGROUNDDOWN(PGSIZE+curnode->length);
     curnode->next_mmap_region = new_region;
+
+        //==========new code==========
+    // the starting address of the memory mapping request or the starting address plus the length of the mapping exceeds the kernel's virtual address space (KERNBASE)
+    if (addr >= (void*) KERNBASE ||
+        addr + PGROUNDUP(length) >= (void*) KERNBASE) {
+      return (void*)0;
+    }
+    // the memory allocation failed, so the function returns a null pointer.
+    if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
+      return (void*)0;
+    }
+    //if kmalloc
+    /*if ((curnode = kmalloc(sizeof(struct mmap_region))) ==
+        (struct mmap_region*)0) {
+      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
+      return (void*)0;
+    }*/
+    //==========new code==========
   }
 
   //the number of regions add 1 to increment region count
@@ -267,7 +296,7 @@ void *mmap_old(void *addr, uint length, int prot, int flags, int fd, int offset)
   return new_region->start_addr;  
 }
 
-void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
+void *mmap_bak(void *addr, uint length, int prot, int flags, int fd, int offset)
 {
   //it checks if the requested address is page-aligned
   if ((uint)addr % PGSIZE != 0) {

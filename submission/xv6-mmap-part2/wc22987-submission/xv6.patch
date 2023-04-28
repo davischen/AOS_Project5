@@ -1,0 +1,2544 @@
+diff -ruN src/Makefile src-finished/Makefile
+--- src/Makefile	2023-04-28 21:59:31.000000000 +0800
++++ src-finished/Makefile	2023-04-28 21:50:42.000000000 +0800
+@@ -12,6 +12,7 @@
+ 	lapic.o\
+ 	log.o\
+ 	main.o\
++	mmap.o\
+ 	mp.o\
+ 	picirq.o\
+ 	pipe.o\
+@@ -171,6 +172,8 @@
+ 	_cat\
+ 	_echo\
+ 	_forktest\
++	_test_8\
++	_test_9\
+ 	_grep\
+ 	_init\
+ 	_kill\
+@@ -251,6 +254,7 @@
+ 
+ EXTRA=\
+ 	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
++	kmalloc.c mmap.c test_8.c test_9.c\
+ 	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c\
+ 	printf.c umalloc.c\
+ 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
+diff -ruN src/Makefile.test src-finished/Makefile.test
+--- src/Makefile.test	2023-04-16 22:20:46.000000000 +0800
++++ src-finished/Makefile.test	2023-04-28 21:50:42.000000000 +0800
+@@ -7,10 +7,12 @@
+ 	ide.o\
+ 	ioapic.o\
+ 	kalloc.o\
++	kmalloc.o\
+ 	kbd.o\
+ 	lapic.o\
+ 	log.o\
+ 	main.o\
++	mmap.o\
+ 	mp.o\
+ 	picirq.o\
+ 	pipe.o\
+@@ -21,6 +23,7 @@
+ 	swtch.o\
+ 	syscall.o\
+ 	sysfile.o\
++	sysmalloc.o\
+ 	sysproc.o\
+ 	trapasm.o\
+ 	trap.o\
+@@ -169,6 +172,8 @@
+ 	_cat\
+ 	_echo\
+ 	_forktest\
++	_test_8\
++	_test_9\
+ 	_grep\
+ 	_init\
+ 	_kill\
+@@ -181,7 +186,7 @@
+ 	_test_5\
+ 	_test_6\
+ 	_test_7\
+-	_test_8\
++	_test_7\
+ 	_mkdir\
+ 	_rm\
+ 	_sh\
+@@ -257,6 +262,7 @@
+ 
+ EXTRA=\
+ 	mkfs.c ulib.c user.h cat.c echo.c forktest.c grep.c kill.c\
++	kmalloc.c mmap.c test_8.c test_9.c\
+ 	ln.c ls.c mkdir.c rm.c stressfs.c usertests.c wc.c zombie.c\
+ 	printf.c umalloc.c\
+ 	README dot-bochsrc *.pl toc.* runoff runoff1 runoff.list\
+Binary files src/_test_1 and src-finished/_test_1 differ
+Binary files src/_test_2 and src-finished/_test_2 differ
+Binary files src/_test_3 and src-finished/_test_3 differ
+Binary files src/_test_4 and src-finished/_test_4 differ
+Binary files src/_test_5 and src-finished/_test_5 differ
+Binary files src/_test_6 and src-finished/_test_6 differ
+Binary files src/_test_7 and src-finished/_test_7 differ
+diff -ruN src/defs.h src-finished/defs.h
+--- src/defs.h	2023-04-28 21:59:28.000000000 +0800
++++ src-finished/defs.h	2023-04-18 21:51:54.000000000 +0800
+@@ -10,6 +10,10 @@
+ struct stat;
+ struct superblock;
+ 
++#ifndef __ASSEMBLER__
++typedef uint pte_t;
++#endif
++
+ // bio.c
+ void            binit(void);
+ struct buf*     bread(uint, uint);
+@@ -33,6 +37,7 @@
+ int             fileread(struct file*, char*, int n);
+ int             filestat(struct file*, struct stat*);
+ int             filewrite(struct file*, char*, int n);
++int             fileseek(struct file*, uint);
+ 
+ // fs.c
+ void            readsb(int dev, struct superblock *sb);
+@@ -124,8 +129,11 @@
+ int             wait(void);
+ void            wakeup(void*);
+ void            yield(void);
++
++//mmap.c
+ void*           mmap(void*, uint, int, int, int, int);
+ int             munmap(void*, uint);
++int             msync(void*, uint);
+ 
+ // swtch.S
+ void            swtch(struct context**, struct context*);
+@@ -162,6 +170,9 @@
+ int             fetchstr(uint, char**);
+ void            syscall(void);
+ 
++// sysfile.c
++int             fdalloc(struct file*);
++
+ // timer.c
+ void            timerinit(void);
+ 
+@@ -181,7 +192,8 @@
+ void            kvmalloc(void);
+ pde_t*          setupkvm(void);
+ char*           uva2ka(pde_t*, char*);
+-int             allocuvm(pde_t*, uint, uint);
++int             allocuvm_mmap(pde_t*, uint, uint);
++int             allocuvm_proc(pde_t*, uint, uint);
+ int             deallocuvm(pde_t*, uint, uint);
+ void            freevm(pde_t*);
+ void            inituvm(pde_t*, char*, uint);
+@@ -191,7 +203,8 @@
+ void            switchkvm(void);
+ int             copyout(pde_t*, uint, void*, uint);
+ void            clearpteu(pde_t *pgdir, char *uva);
+-int             hasptep(pde_t *pgdir, char *uva);
++int             mappages(pde_t*, void*, uint, uint, int); 
++pte_t*          walkpgdir(pde_t*, const void*, int); 
+ 
+ // number of elements in fixed-size array
+ #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+diff -ruN src/exec.c src-finished/exec.c
+--- src/exec.c	2023-04-16 22:20:46.000000000 +0800
++++ src-finished/exec.c	2023-04-18 21:51:54.000000000 +0800
+@@ -49,7 +49,7 @@
+       goto bad;
+     if(ph.vaddr + ph.memsz < ph.vaddr)
+       goto bad;
+-    if((sz = allocuvm(pgdir, sz, ph.vaddr + ph.memsz)) == 0)
++    if((sz = allocuvm_proc(pgdir, sz, ph.vaddr + ph.memsz)) == 0)
+       goto bad;
+     if(ph.vaddr % PGSIZE != 0)
+       goto bad;
+@@ -63,7 +63,7 @@
+   // Allocate two pages at the next page boundary.
+   // Make the first inaccessible.  Use the second as the user stack.
+   sz = PGROUNDUP(sz);
+-  if((sz = allocuvm(pgdir, sz, sz + 2*PGSIZE)) == 0)
++  if((sz = allocuvm_proc(pgdir, sz, sz + 2*PGSIZE)) == 0)
+     goto bad;
+   clearpteu(pgdir, (char*)(sz - 2*PGSIZE));
+   sp = sz;
+diff -ruN src/file.c src-finished/file.c
+--- src/file.c	2023-04-16 22:20:46.000000000 +0800
++++ src-finished/file.c	2023-04-18 21:51:54.000000000 +0800
+@@ -155,3 +155,13 @@
+   panic("filewrite");
+ }
+ 
++int 
++fileseek (struct file* f, uint offset)
++{
++  begin_op();
++  ilock(f->ip); //acquire inode lock
++  f->off = offset;
++  iunlock(f->ip);
++  end_op();
++  return 0;
++}
+\ No newline at end of file
+diff -ruN src/kmalloc.c src-finished/kmalloc.c
+--- src/kmalloc.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/kmalloc.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,94 @@
++#include "types.h"
++#include "defs.h"
++#include "mmu.h"
++
++// Memory allocator by Kernighan and Ritchie,
++// The C programming Language, 2nd ed.  Section 8.7.
++// Modified for allocation in the kernel.
++
++typedef long Align;
++
++union header {
++  struct {
++    union header *ptr;
++    uint size;
++  } s;
++  Align x;
++};
++
++typedef union header Header;
++
++static Header base;
++static Header *freep;
++
++void
++kmfree(void *addr)
++{
++  Header *bp, *p;
++
++  bp = (Header*)addr - 1;
++  for(p = freep; !(bp > p && bp < p->s.ptr); p = p->s.ptr)
++    if(p >= p->s.ptr && (bp > p || bp < p->s.ptr))
++      break;
++  if(bp + bp->s.size == p->s.ptr){
++    bp->s.size += p->s.ptr->s.size;
++    bp->s.ptr = p->s.ptr->s.ptr;
++  } else
++    bp->s.ptr = p->s.ptr;
++  if(p + p->s.size == bp){
++    p->s.size += bp->s.size;
++    p->s.ptr = bp->s.ptr;
++  } else
++    p->s.ptr = bp;
++  freep = p;
++}
++
++static Header*
++morecore(uint nu)
++{
++  char *p;
++  Header *hp;
++
++  if (nu * sizeof(Header) > PGSIZE) {
++    panic("kmalloc: memory allocation too big");
++  }
++  if (PGSIZE % sizeof(Header) != 0) {
++    panic("kmalloc: memory allocation not (header) aligned");
++  }
++  if ((p = kalloc()) == (char*)0) {
++    panic("kmalloc: memory allocation failed");
++  }
++  hp = (Header*)p;
++  hp->s.size = PGSIZE / sizeof(Header);
++  kmfree((void*)(hp + 1));
++  return freep;
++}
++
++void*
++kmalloc(uint nbytes)
++{
++  Header *p, *prevp;
++  uint nunits;
++
++  nunits = (nbytes + sizeof(Header) - 1)/sizeof(Header) + 1;
++  if((prevp = freep) == 0){
++    base.s.ptr = freep = prevp = &base;
++    base.s.size = 0;
++  }
++  for(p = prevp->s.ptr; ; prevp = p, p = p->s.ptr){
++    if(p->s.size >= nunits){
++      if(p->s.size == nunits)
++        prevp->s.ptr = p->s.ptr;
++      else {
++        p->s.size -= nunits;
++        p += p->s.size;
++        p->s.size = nunits;
++      }
++      freep = prevp;
++      return (void*)(p + 1);
++    }
++    if(p == freep)
++      if((p = morecore(nunits)) == 0)
++        return 0;
++  }
++}
+diff -ruN src/kmalloc.c.rej src-finished/kmalloc.c.rej
+--- src/kmalloc.c.rej	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/kmalloc.c.rej	2023-04-28 21:59:31.000000000 +0800
+@@ -0,0 +1,97 @@
++***************
++*** 0 ****
++--- 1,94 ----
+++ #include "types.h"
+++ #include "defs.h"
+++ #include "mmu.h"
+++ 
+++ // Memory allocator by Kernighan and Ritchie,
+++ // The C programming Language, 2nd ed.  Section 8.7.
+++ // Modified for allocation in the kernel.
+++ 
+++ typedef long Align;
+++ 
+++ union header {
+++   struct {
+++     union header *ptr;
+++     uint size;
+++   } s;
+++   Align x;
+++ };
+++ 
+++ typedef union header Header;
+++ 
+++ static Header base;
+++ static Header *freep;
+++ 
+++ void
+++ kmfree(void *addr)
+++ {
+++   Header *bp, *p;
+++ 
+++   bp = (Header*)addr - 1;
+++   for(p = freep; !(bp > p && bp < p->s.ptr); p = p->s.ptr)
+++     if(p >= p->s.ptr && (bp > p || bp < p->s.ptr))
+++       break;
+++   if(bp + bp->s.size == p->s.ptr){
+++     bp->s.size += p->s.ptr->s.size;
+++     bp->s.ptr = p->s.ptr->s.ptr;
+++   } else
+++     bp->s.ptr = p->s.ptr;
+++   if(p + p->s.size == bp){
+++     p->s.size += bp->s.size;
+++     p->s.ptr = bp->s.ptr;
+++   } else
+++     p->s.ptr = bp;
+++   freep = p;
+++ }
+++ 
+++ static Header*
+++ morecore(uint nu)
+++ {
+++   char *p;
+++   Header *hp;
+++ 
+++   if (nu * sizeof(Header) > PGSIZE) {
+++     panic("kmalloc: memory allocation too big");
+++   }
+++   if (PGSIZE % sizeof(Header) != 0) {
+++     panic("kmalloc: memory allocation not (header) aligned");
+++   }
+++   if ((p = kalloc()) == (char*)0) {
+++     panic("kmalloc: memory allocation failed");
+++   }
+++   hp = (Header*)p;
+++   hp->s.size = PGSIZE / sizeof(Header);
+++   kmfree((void*)(hp + 1));
+++   return freep;
+++ }
+++ 
+++ void*
+++ kmalloc(uint nbytes)
+++ {
+++   Header *p, *prevp;
+++   uint nunits;
+++ 
+++   nunits = (nbytes + sizeof(Header) - 1)/sizeof(Header) + 1;
+++   if((prevp = freep) == 0){
+++     base.s.ptr = freep = prevp = &base;
+++     base.s.size = 0;
+++   }
+++   for(p = prevp->s.ptr; ; prevp = p, p = p->s.ptr){
+++     if(p->s.size >= nunits){
+++       if(p->s.size == nunits)
+++         prevp->s.ptr = p->s.ptr;
+++       else {
+++         p->s.size -= nunits;
+++         p += p->s.size;
+++         p->s.size = nunits;
+++       }
+++       freep = prevp;
+++       return (void*)(p + 1);
+++     }
+++     if(p == freep)
+++       if((p = morecore(nunits)) == 0)
+++         return 0;
+++   }
+++ }
+diff -ruN src/memlayout.h src-finished/memlayout.h
+--- src/memlayout.h	2023-04-16 22:20:46.000000000 +0800
++++ src-finished/memlayout.h	2023-04-18 21:51:54.000000000 +0800
+@@ -13,3 +13,5 @@
+ 
+ #define V2P_WO(x) ((x) - KERNBASE)    // same as V2P, but without casts
+ #define P2V_WO(x) ((x) + KERNBASE)    // same as P2V, but without casts
++
++#define MMAPBASE 0x40000000
+diff -ruN src/mman.h src-finished/mman.h
+--- src/mman.h	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/mman.h	2023-04-28 21:50:42.000000000 +0800
+@@ -0,0 +1,13 @@
++// Protection bits for mmap
++#define PROT_WRITE      1
++
++// Flags for mmap
++#define MAP_ANONYMOUS   0
++#define MAP_FILE        1
++
++#define READONLY 0
++#define WRITEABLE 1
++#define ANONYMOUS 0
++#define FILEBACKED 1
++
++#define MAX_MMAP_REGIONS 64
+\ No newline at end of file
+diff -ruN src/mmap.c src-finished/mmap.c
+--- src/mmap.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/mmap.c	2023-04-28 21:53:04.000000000 +0800
+@@ -0,0 +1,430 @@
++#include "types.h"
++#include "x86.h"
++#include "defs.h"
++#include "date.h"
++#include "param.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++#include "proc.h"
++
++#define NULL (mmap_region*)0
++
++//helper functions
++
++static void remove_region(mmap_region* node, mmap_region* prev)
++{
++  if(node == myproc()->mmap_regions_head)
++  {
++    if(myproc()->mmap_regions_head->next_mmap_region != 0)
++      myproc()->mmap_regions_head = myproc()->mmap_regions_head->next_mmap_region;
++    else
++      myproc()->mmap_regions_head = 0;
++  }
++  else
++    prev->next_mmap_region = node->next_mmap_region;
++  kmfree(node);
++}
++static void search_region(struct proc *curproc ,void *addr, uint length)
++{
++  if (curproc->mmap_regions_head == NULL) {
++    return;
++  }
++  int size = 0;
++  mmap_region* curnode = curproc->mmap_regions_head;
++  mmap_region* next_node = curproc->mmap_regions_head;
++
++  //iterate over the list to check if the parameters passed to munmap are in the list
++  //reduce the process size, delete the node.
++  while(next_node != 0)
++  {
++    if(next_node->start_addr == addr && next_node->length == length)
++    {
++      curproc->sz = deallocuvm(curproc->pgdir, curproc->sz, curproc->sz - length);
++      switchuvm(curproc);
++      curproc->number_regions--;
++      // close the file we were mapping to
++      if(next_node->region_type == MAP_FILE)
++      {
++        fileclose(curproc->ofile[next_node->fd]);
++        curproc->ofile[next_node->fd] = 0;
++      }
++      if(next_node->next_mmap_region != (struct mmap_region*)0) {
++        size = next_node->next_mmap_region->length;
++        curnode->next_mmap_region->length = size;
++      }
++      remove_region(next_node, curnode);
++    }
++    curnode = next_node;
++    next_node = curnode->next_mmap_region;
++  }
++}
++/*int
++munmap2(void *addr, uint length)
++{
++  struct mmap_region *mmap, *prev_mmap;
++  struct proc *curproc = myproc();
++
++  for (mmap = curproc->mmap_regions_head, prev_mmap = (struct mmap_region*)0;
++       mmap != (struct mmap_region*)0;
++       prev_mmap = mmap, mmap = mmap->next_mmap_region) {
++    if ((uint)addr == (uint)mmap->start_addr && length == mmap->length) {
++      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
++      if (prev_mmap != (struct mmap_region*)0) {
++        prev_mmap->next_mmap_region = mmap->next_mmap_region;
++      } else {
++        curproc->mmap_regions_head = mmap->next_mmap_region;
++      }
++      kmfree(mmap);
++      return 0;
++    }
++  }
++  return -1;
++}*/
++static mmap_region* mmap_region_alloc(void* addr, uint length, int flags, int offset, int prot)
++{
++  //allocate new region memory
++  mmap_region* new_region = (mmap_region*)kmalloc(sizeof(mmap_region));
++  if(new_region == NULL)
++    return NULL;
++
++  //store the mapping information for the newly allocated memory region
++  new_region->start_addr = addr;
++  new_region->length = length;
++  new_region->region_type = flags;
++  new_region->offset = offset;
++  new_region->prot = prot;
++  new_region->next_mmap_region = 0;
++  return new_region;
++}
++void *mmap_old(void *addr, uint length, int prot, int flags, int fd, int offset)
++{
++  //it checks if the requested address is page-aligned
++  if ((uint)addr % PGSIZE != 0) {
++    return (void*)-1;
++  }
++  //check argument inputs 
++  if (addr < (void*)0 || addr == (void*)KERNBASE || addr > (void*)KERNBASE || length < 1)
++  {
++    return (void*)-1;
++  }
++
++  //get current point
++  struct proc *curproc = myproc();
++  //it gets the current process size
++  uint oldsz = curproc->sz;
++  //adds the requested length to the new size of the process
++  uint newsz = curproc->sz + length;
++
++  // Expand process size
++  curproc->sz = newsz;
++  //if((curproc->sz = allocuvm_mmap(curproc->pgdir, oldsz, newsz))==0)
++  //   return (void*)-1;
++
++  //read pagetable of current process
++  switchuvm(curproc);
++
++  //if allocation fails
++  addr = (void*)(PGROUNDDOWN(oldsz)+ MMAPBASE );//
++  mmap_region* new_region = mmap_region_alloc(addr, length, flags, offset, prot);
++  if(new_region == NULL)
++  {
++    //to free up previously new process size
++    deallocuvm(curproc->pgdir, newsz, oldsz);
++    return (void*)-1;
++  }
++
++  //check the flags and file descriptor argument
++  if (flags == MAP_ANONYMOUS)
++  {
++    if (fd != -1) //fd must be -1 
++    {
++      deallocuvm(curproc->pgdir, newsz, oldsz);
++      kmfree(new_region);
++      return (void*)-1;
++    }
++  }
++  else if (flags == MAP_FILE)
++  {
++    if (fd > -1)
++    {
++      if((fd=fdalloc(curproc->ofile[fd])) < 0)
++      {
++        deallocuvm(curproc->pgdir, newsz, oldsz);
++        kmfree(new_region);
++        return (void*)-1;
++      }
++      filedup(curproc->ofile[fd]);
++      new_region->fd=fd;
++    }
++    else
++    {
++      deallocuvm(curproc->pgdir, newsz, oldsz);
++      kmfree(new_region);
++      return (void*)-1;
++    }
++  }
++
++  if (curproc->number_regions == MAX_MMAP_REGIONS) {
++    deallocuvm(curproc->pgdir, newsz, oldsz);
++    kmfree(new_region);
++    return (void*)-1;
++  }
++
++  // if it is the first region in current process, set header point to new region
++  if(curproc->number_regions == 0)
++    curproc->mmap_regions_head = new_region;
++  // else iterate over the mapped list and check memory region in boundary of current process
++  else
++  {
++    //it iterates over the mapped list and checks whether the memory region is in the boundary of the current process.
++    mmap_region* curnode = curproc->mmap_regions_head;
++    while(curnode->next_mmap_region != 0)
++    {
++      //from starting address to iterate all mapped list
++      if(addr == curnode->start_addr)
++      {
++        addr += PGROUNDDOWN(PGSIZE+curnode->length);
++        curnode = curproc->mmap_regions_head;
++      }
++      //check if addr is larger than upper limit (KERNBASE)
++      else if(addr == (void*)KERNBASE || addr > (void*)KERNBASE)
++      {
++        //fail to allocate new region
++        deallocuvm(curproc->pgdir, newsz, oldsz);
++        kmfree(new_region);
++        return (void*)-1;
++      }
++      //move to next until last region
++      curnode = curnode->next_mmap_region;
++    }
++    //
++    if (addr == curnode->start_addr)
++      addr += PGROUNDDOWN(PGSIZE+curnode->length);
++    curnode->next_mmap_region = new_region;
++  }
++
++  //the number of regions add 1 to increment region count
++  curproc->number_regions++;
++  //assign new region's starting address
++  new_region->start_addr = addr;
++  return new_region->start_addr;  
++}
++void *mmap(void *addr, uint length, int prot, int flags, int fd, int offset)
++{
++  //it checks if the requested address is page-aligned
++  if ((uint)addr % PGSIZE != 0) {
++    return (void*)-1;
++  }
++
++  //check argument inputs 
++  if (addr < (void*)0 || addr == (void*)KERNBASE || addr > (void*)KERNBASE || length < 1)
++  {
++    return (void*)-1;
++  }
++  
++  //get current point
++  struct proc *curproc = myproc();
++  //it gets the current process size
++  uint oldsz = curproc->sz;
++  //adds the requested length to the new size of the process
++  uint newsz = curproc->sz + length;
++
++  // Expand process size
++  curproc->sz = newsz;
++  //if((curproc->sz = allocuvm_mmap(curproc->pgdir, oldsz, newsz))==0)
++  //   return (void*)-1;
++
++  //read pagetable of current process
++  switchuvm(curproc);
++  //==========new code==========
++  //if allocation fails
++  addr = (void*)(PGROUNDDOWN((uint)oldsz)+ MMAPBASE );//replace addr with oldsz
++  if (addr >= (void *) KERNBASE ||
++      addr + PGROUNDUP(length) >= (void *) KERNBASE) {
++    addr = (void*)MMAPBASE;
++    if (addr + PGROUNDUP(length) >= (void *) KERNBASE) {
++      return (void*)0;
++    }
++  }
++  //==========new code==========
++
++  mmap_region* new_region = mmap_region_alloc(addr, length, flags, offset, prot);
++  if(new_region == NULL)
++  {
++    //to free up previously new process size
++    deallocuvm(curproc->pgdir, newsz, oldsz);
++    return (void*)-1;
++  }
++
++  //check the flags and file descriptor argument
++  if (flags == MAP_ANONYMOUS)
++  {
++    if (fd != -1) //fd must be -1 
++    {
++      deallocuvm(curproc->pgdir, newsz, oldsz);
++      kmfree(new_region);
++      return (void*)-1;
++    }
++  }
++  else if (flags == MAP_FILE)
++  {
++    if (fd > -1)
++    {
++      if((fd=fdalloc(curproc->ofile[fd])) < 0)
++      {
++        deallocuvm(curproc->pgdir, newsz, oldsz);
++        kmfree(new_region);
++        return (void*)-1;
++      }
++      filedup(curproc->ofile[fd]);
++      new_region->fd=fd;
++    }
++    else
++    {
++      deallocuvm(curproc->pgdir, newsz, oldsz);
++      kmfree(new_region);
++      return (void*)-1;
++    }
++  }
++
++  if (curproc->number_regions == MAX_MMAP_REGIONS) {
++    deallocuvm(curproc->pgdir, newsz, oldsz);
++    kmfree(new_region);
++    return (void*)-1;
++  }
++
++
++  // if it is the first region in current process, set header point to new region
++  if(curproc->number_regions == 0)
++    curproc->mmap_regions_head = new_region;
++  // else iterate over the mapped list and check memory region in boundary of current process
++  else
++  {
++    //it iterates over the mapped list and checks whether the memory region is in the boundary of the current process.
++    mmap_region* curnode = curproc->mmap_regions_head;
++    while(curnode->next_mmap_region != 0)
++    {
++      //from starting address to iterate all mapped list
++      //==========new code==========
++      // the requested region overlaps with the current mapped region
++      // there is any overlap between the existing mmap region and the new region being requested
++      if((addr >= curnode->start_addr  &&
++        (uint)curnode->start_addr + PGROUNDUP(curnode->length) >= (uint)addr) || ((uint)curnode->start_addr >= (uint)addr &&
++        (uint)addr + PGROUNDUP(length) >= (uint)curnode->start_addr))
++      {
++        //cprintf("addr += PGROUNDDOWN(PGSIZE+curnode->length)");
++        addr += PGROUNDDOWN(PGSIZE+curnode->length);
++        curnode = curproc->mmap_regions_head;
++        continue;
++      }
++      //==========new code==========
++      //check if addr is larger than upper limit (KERNBASE)
++      else if(addr == (void*)KERNBASE || addr > (void*)KERNBASE)
++      {
++        //fail to allocate new region
++        deallocuvm(curproc->pgdir, newsz, oldsz);
++        kmfree(new_region);
++        return (void*)-1;
++      }
++      //move to next until last region
++      curnode = curnode->next_mmap_region;
++    }
++    //
++    if (addr == curnode->start_addr)
++      addr += PGROUNDDOWN(PGSIZE+curnode->length);
++    curnode->next_mmap_region = new_region;
++
++    //==========new code==========
++    // the starting address of the memory mapping request or the starting address plus the length of the mapping exceeds the kernel's virtual address space (KERNBASE)
++    if (addr >= (void*) KERNBASE ||
++        addr + PGROUNDUP(length) >= (void*) KERNBASE) {
++      return (void*)0;
++    }
++    // the memory allocation failed, so the function returns a null pointer.
++    if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
++      return (void*)0;
++    }
++    //if kmalloc
++    /*if ((curnode = kmalloc(sizeof(struct mmap_region))) ==
++        (struct mmap_region*)0) {
++      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
++      return (void*)0;
++    }*/
++    //==========new code==========
++  }
++  //the number of regions add 1 to increment region count
++  curproc->number_regions++;
++  //assign new region's starting address
++  new_region->start_addr = addr;
++  return new_region->start_addr;  
++}
++
++
++int munmap(void *addr, uint length)
++{
++  /*if (addr == NULL ||  length == 0)
++    return -1;*/
++
++  //verify that the address and length passed is indeed a valid mapping
++  //addr has to smaller than KERNBASE, and its length must be larger than 1
++  if (addr == (void*)KERNBASE || addr > (void*)KERNBASE || length < 1)
++  {
++    return -1;
++  }
++  struct proc *curproc = myproc();
++  
++  if (curproc->number_regions == 0)
++    return -1;
++
++  
++  search_region(curproc,addr,length);
++  
++  return 0;
++}
++
++int msync (void* start_addr, uint length)
++{
++  struct proc *curproc = myproc();
++
++  // If nothing has been allocated, no need to do msync
++  if (curproc->number_regions == 0)
++  {
++    return -1;
++  }
++  int result=0;
++  mmap_region *curnode = curproc->mmap_regions_head;
++  //iterates over all the memory mapped regions of the process using a linked list of mmap regions
++  while(curnode)
++  {
++    //checks whether any regions have been allocated to the process.
++    if(curnode->start_addr == start_addr && curnode->length == length)
++    {
++      if(curnode->fd<0)
++      {
++        return -1;
++      }
++      //If it is marked as dirty
++      //the memory region has been modified and needs to be written back to the file on disk.
++      pte_t* ret = walkpgdir(curproc->pgdir, start_addr, 0);
++      if((uint)ret & PTE_D)
++      {
++        //do nothing
++      }
++
++      if((result=fileseek(curproc->ofile[curnode->fd], curnode->offset + (start_addr - curnode->start_addr)))==-1)
++      {
++        return -1;
++      }
++      if((result=filewrite(curproc->ofile[curnode->fd], start_addr, length))==-1)
++      {
++        return -1;
++      }
++      return 0;
++    }
++
++    curnode = curnode->next_mmap_region;
++  }
++  
++  return -1; //No match
++}
+\ No newline at end of file
+diff -ruN src/mmu.h src-finished/mmu.h
+--- src/mmu.h	2023-04-16 22:20:46.000000000 +0800
++++ src-finished/mmu.h	2023-04-18 21:51:54.000000000 +0800
+@@ -94,6 +94,7 @@
+ #define PTE_P           0x001   // Present
+ #define PTE_W           0x002   // Writeable
+ #define PTE_U           0x004   // User
++#define PTE_D           0x040   // Dirty 
+ #define PTE_PS          0x080   // Page Size
+ 
+ // Address in page table or page directory entry
+diff -ruN src/proc.c src-finished/proc.c
+--- src/proc.c	2023-04-28 21:59:31.000000000 +0800
++++ src-finished/proc.c	2023-04-18 21:51:54.000000000 +0800
+@@ -144,7 +144,7 @@
+   safestrcpy(p->name, "initcode", sizeof(p->name));
+   p->cwd = namei("/");
+ 
+-  p->mmap_regions = (struct mmap_region*)0;
++  p->mmap_regions_head = (struct mmap_region*)0;
+ 
+   // this assignment to p->state lets other cores
+   // run this process. the acquire forces the above
+@@ -167,7 +167,7 @@
+ 
+   sz = curproc->sz;
+   if(n > 0){
+-    if((sz = allocuvm(curproc->pgdir, sz, sz + n)) == 0)
++    if((sz = allocuvm_proc(curproc->pgdir, sz, sz + n)) == 0)
+       return -1;
+   } else if(n < 0){
+     if((sz = deallocuvm(curproc->pgdir, sz, sz + n)) == 0)
+@@ -195,13 +195,13 @@
+   }
+ 
+   // Copy the mmap regions.
+-  for(mmap = curproc->mmap_regions, prev_mmap = (struct mmap_region*)0;
++  for(mmap = curproc->mmap_regions_head, prev_mmap = (struct mmap_region*)0;
+       mmap != (struct mmap_region*)0;
+       mmap = mmap->next_mmap_region, prev_mmap = new_mmap){
+     if((new_mmap = kmalloc(sizeof(struct mmap_region))) ==
+        (struct mmap_region*)0){
+-      free_mmap_regions(np->mmap_regions);
+-      np->mmap_regions = (struct mmap_region*)0;
++      free_mmap_regions(np->mmap_regions_head);
++      np->mmap_regions_head = (struct mmap_region*)0;
+       kfree(np->kstack);
+       np->kstack = 0;
+       np->state = UNUSED;
+@@ -210,21 +210,21 @@
+     new_mmap->start_addr = mmap->start_addr;
+     new_mmap->length = mmap->length;
+     new_mmap->prot = mmap->prot;
+-    new_mmap->flags = mmap->flags;
++    new_mmap->region_type = mmap->region_type;
+     new_mmap->fd = mmap->fd;
+     new_mmap->offset = mmap->offset;
+     new_mmap->next_mmap_region = (struct mmap_region*)0;
+     if(prev_mmap != (struct mmap_region*)0){
+       prev_mmap->next_mmap_region = new_mmap;
+     } else{
+-      np->mmap_regions = new_mmap;
++      np->mmap_regions_head = new_mmap;
+     }
+   }
+ 
+   // Copy process state from proc.
+   if((np->pgdir = copyuvm(curproc->pgdir, curproc->sz)) == 0){
+-    free_mmap_regions(np->mmap_regions);
+-    np->mmap_regions = (struct mmap_region*)0;
++    free_mmap_regions(np->mmap_regions_head);
++    np->mmap_regions_head = (struct mmap_region*)0;
+     kfree(np->kstack);
+     np->kstack = 0;
+     np->state = UNUSED;
+@@ -329,8 +329,8 @@
+         p->name[0] = 0;
+         p->killed = 0;
+         p->state = UNUSED;
+-        free_mmap_regions(p->mmap_regions);
+-        p->mmap_regions = (struct mmap_region*)0;
++        free_mmap_regions(p->mmap_regions_head);
++        p->mmap_regions_head = (struct mmap_region*)0;
+         release(&ptable.lock);
+         return pid;
+       }
+@@ -532,64 +532,60 @@
+   return -1;
+ }
+ 
+-void*
++/*void*
+ mmap(void* addr, uint length, int prot, int flags, int fd, int offset)
+ {
+   struct mmap_region *mmap;
+   struct proc *curproc = myproc();
+-  uint curr_addr, start_addr, sz;
+-  uint i, found;
++  int bad_addr;
+ 
+-  curr_addr = PGROUNDDOWN((uint)addr);
+-  start_addr = curr_addr;
+-  sz = start_addr + PGROUNDUP(length);
+-  for (i = 0, found = 0; i < curproc->sz && curr_addr < sz; i += PGSIZE) {
+-    if (sz > curproc->sz) {
+-      curr_addr = 0;
+-      start_addr = curr_addr;
+-      sz = start_addr + PGROUNDUP(length);
+-      found = 0;
+-    } else if (hasptep(curproc->pgdir, (char*)curr_addr)) {
+-      curr_addr += PGSIZE;
+-      start_addr = curr_addr;
+-      sz = start_addr + PGROUNDUP(length);
+-      found = 0;
+-    } else {
+-      curr_addr += PGSIZE;
+-      if (curr_addr < sz) {
+-        found = 0;
+-      } else {
+-        found = 1;
+-      }
++  addr = (void*)PGROUNDUP((uint)addr + MMAPBASE);
++  if ((uint)addr >= KERNBASE ||
++      (uint)addr + PGROUNDUP(length) >= KERNBASE) {
++    addr = (void*)MMAPBASE;
++    if ((uint)addr + PGROUNDUP(length) >= KERNBASE) {
++      return (void*)0;
+     }
+   }
++  for (mmap = curproc->mmap_regions_head; mmap != (struct mmap_region*)0
++         ;) {
++    bad_addr = 0;
++    if ((uint)addr >= (uint)mmap->start_addr &&
++        (uint)mmap->start_addr + PGROUNDUP(mmap->length) >= (uint)addr) {
++      bad_addr = 1;
++    }
++    if ((uint)mmap->start_addr >= (uint)addr &&
++        (uint)addr + PGROUNDUP(length) >= (uint)mmap->start_addr) {
++      bad_addr = 1;
++    }
++    if (bad_addr) {
++      addr = (void*)(mmap->start_addr + PGROUNDUP(mmap->length) + PGSIZE);
++      mmap = curproc->mmap_regions_head;
++      continue;
++    }
++    mmap = mmap->next_mmap_region;
++  }
++  if ((uint)addr >= KERNBASE ||
++      (uint)addr + PGROUNDUP(length) >= KERNBASE) {
++    return (void*)0;
++  }
++  if (allocuvm_mmap(curproc->pgdir, (uint)addr, (uint)addr + length) == 0) {
++    return (void*)0;
++  }
+   if ((mmap = kmalloc(sizeof(struct mmap_region))) ==
+       (struct mmap_region*)0) {
+-        return (void*)0;
++    deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
++    return (void*)0;
+   }
+-  if (found) {
+-    if (allocuvm(curproc->pgdir, start_addr, sz) <= 0) {
+-      kmfree(mmap);
+-      return (void*)0;
+-    }
+-  } else {
+-    start_addr = curproc->sz;
+-    if (growproc(PGROUNDUP(length)) != 0) {
+-      kmfree(mmap);
+-      return (void*)0;
+-    }
+-  }
+-  mmap->start_addr = start_addr;
++  mmap->start_addr = (uint)addr;
+   mmap->length = length;
+   mmap->prot = prot;
+   mmap->flags = flags;
+   mmap->fd = fd;
+   mmap->offset = offset;
+-  mmap->next_mmap_region = curproc->mmap_regions;
+-  curproc->mmap_regions = mmap;
+-
+-  addr = (void*)start_addr;
+-  return (void*)addr;
++  mmap->next_mmap_region = curproc->mmap_regions_head;
++  curproc->mmap_regions_head = mmap;
++  return addr;
+ }
+ 
+ int
+@@ -598,15 +594,15 @@
+   struct mmap_region *mmap, *prev_mmap;
+   struct proc *curproc = myproc();
+ 
+-  for (mmap = curproc->mmap_regions, prev_mmap = (struct mmap_region*)0;
++  for (mmap = curproc->mmap_regions_head, prev_mmap = (struct mmap_region*)0;
+        mmap != (struct mmap_region*)0;
+        prev_mmap = mmap, mmap = mmap->next_mmap_region) {
+     if ((uint)addr == (uint)mmap->start_addr && length == mmap->length) {
+-      deallocuvm(curproc->pgdir, (uint)addr + PGROUNDUP(length), (uint)addr);
++      deallocuvm(curproc->pgdir, (uint)addr + length, (uint)addr);
+       if (prev_mmap != (struct mmap_region*)0) {
+         prev_mmap->next_mmap_region = mmap->next_mmap_region;
+       } else {
+-        curproc->mmap_regions = mmap->next_mmap_region;
++        curproc->mmap_regions_head = mmap->next_mmap_region;
+       }
+       kmfree(mmap);
+       return 0;
+@@ -614,7 +610,7 @@
+   }
+   return -1;
+ }
+-
++*/
+ static void
+ free_mmap_regions(struct mmap_region *mmap_regions)
+ {
+@@ -625,7 +621,7 @@
+     mmap->start_addr = 0;
+     mmap->length = 0;
+     mmap->prot = 0;
+-    mmap->flags = 0;
++    mmap->region_type = 0;
+     mmap->fd = 0;
+     mmap->offset = 0;
+   }
+diff -ruN src/proc.h src-finished/proc.h
+--- src/proc.h	2023-04-28 21:59:31.000000000 +0800
++++ src-finished/proc.h	2023-04-18 21:51:54.000000000 +0800
+@@ -35,17 +35,17 @@
+ enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
+ 
+ // Per-process mmap
+-struct mmap_region {
+-  uint start_addr;             // Starting address (page aligned)
++typedef struct mmap_region {
++  void* start_addr;             // Starting address (page aligned)
+   uint length;                 // Size of mmap
+   int prot;                    // Memory protections
+-  int flags;                   // Region type (anonymous vs. file-backed)
++  int region_type;                   // Region type (anonymous vs. file-backed)
+   int fd;                      // File-backed memory region
+   int offset;                  // Offset into file-backed memory region
+ 
+   // Next mmap region
+   struct mmap_region *next_mmap_region;
+-};
++} mmap_region;
+ 
+ // Per-process state
+ struct proc {
+@@ -63,8 +63,9 @@
+   struct inode *cwd;           // Current directory
+   char name[16];               // Process name (debugging)
+ 
++  int number_regions;                // jps - number of allocated regions
+   // Mmap regions
+-  struct mmap_region *mmap_regions;
++  struct mmap_region *mmap_regions_head;
+ };
+ 
+ // Process memory is laid out contiguously, low addresses first:
+diff -ruN src/syscall.c src-finished/syscall.c
+--- src/syscall.c	2023-04-28 21:59:31.000000000 +0800
++++ src-finished/syscall.c	2023-04-18 21:51:54.000000000 +0800
+@@ -107,6 +107,7 @@
+ extern int sys_kmfree(void);
+ extern int sys_mmap(void);
+ extern int sys_munmap(void);
++extern int sys_msync(void);
+ 
+ static int (*syscalls[])(void) = {
+ [SYS_fork]    sys_fork,
+@@ -134,6 +135,7 @@
+ [SYS_kmfree]  sys_kmfree,
+ [SYS_mmap]    sys_mmap,
+ [SYS_munmap]  sys_munmap,
++[SYS_msync]   sys_msync,
+ };
+ 
+ void
+diff -ruN src/syscall.h src-finished/syscall.h
+--- src/syscall.h	2023-04-28 21:59:31.000000000 +0800
++++ src-finished/syscall.h	2023-04-18 21:51:54.000000000 +0800
+@@ -24,3 +24,4 @@
+ #define SYS_kmfree  23
+ #define SYS_mmap    24
+ #define SYS_munmap  25
++#define SYS_msync   26
+\ No newline at end of file
+diff -ruN src/sysfile.c src-finished/sysfile.c
+--- src/sysfile.c	2023-04-16 22:20:46.000000000 +0800
++++ src-finished/sysfile.c	2023-04-18 21:51:54.000000000 +0800
+@@ -37,7 +37,7 @@
+ 
+ // Allocate a file descriptor for the given file.
+ // Takes over file reference from caller on success.
+-static int
++ int
+ fdalloc(struct file *f)
+ {
+   int fd;
+diff -ruN src/sysmalloc.c src-finished/sysmalloc.c
+--- src/sysmalloc.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/sysmalloc.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,31 @@
++//
++// Kernel memory system calls.
++// This is purely for testing purposes and is a wrapper for
++// calling the kmalloc & kmfree from the user space.
++//
++
++#include "types.h"
++#include "defs.h"
++
++int
++sys_kmalloc(void)
++{
++  int nbytes;
++
++  if (argint(0, &nbytes) < 0) {
++    return -1;
++  }
++  return (int)kmalloc((uint)nbytes);
++}
++
++int
++sys_kmfree(void)
++{
++  void *addr;
++
++  if (argptr(0, (void*)&addr, sizeof(addr)) < 0) {
++    return -1;
++  }
++  kmfree(addr);
++  return 0;
++}
+diff -ruN src/sysmalloc.c.rej src-finished/sysmalloc.c.rej
+--- src/sysmalloc.c.rej	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/sysmalloc.c.rej	2023-04-28 21:59:33.000000000 +0800
+@@ -0,0 +1,34 @@
++***************
++*** 0 ****
++--- 1,31 ----
+++ //
+++ // Kernel memory system calls.
+++ // This is purely for testing purposes and is a wrapper for
+++ // calling the kmalloc & kmfree from the user space.
+++ //
+++ 
+++ #include "types.h"
+++ #include "defs.h"
+++ 
+++ int
+++ sys_kmalloc(void)
+++ {
+++   int nbytes;
+++ 
+++   if (argint(0, &nbytes) < 0) {
+++     return -1;
+++   }
+++   return (int)kmalloc((uint)nbytes);
+++ }
+++ 
+++ int
+++ sys_kmfree(void)
+++ {
+++   void *addr;
+++ 
+++   if (argptr(0, (void*)&addr, sizeof(addr)) < 0) {
+++     return -1;
+++   }
+++   kmfree(addr);
+++   return 0;
+++ }
+diff -ruN src/sysproc.c src-finished/sysproc.c
+--- src/sysproc.c	2023-04-28 21:59:33.000000000 +0800
++++ src-finished/sysproc.c	2023-04-18 21:51:54.000000000 +0800
+@@ -93,9 +93,9 @@
+ int
+ sys_mmap(void)
+ {
+-  int addr, len, prot, flags, fd, offset;
++  int addr, length, prot, flags, fd, offset;
+ 
+-  if (argint(0, &addr) < 0) {
++  /*if (argint(0, &addr) < 0) {
+     return 0;
+   }
+   if (argint(1, &len) < 0) {
+@@ -112,8 +112,32 @@
+   }
+   if (argint(5, &offset) < 0) {
+     return 0;
++  }*/
++  if(argint(0, &addr) < 0)
++  {
++    return -1;
++  }
++  if(argint(1, &length) < 0)
++  {
++    return -1;
++  }
++  if(argint(2, &prot) < 0)
++  {
++    return -1;
++  }
++  if(argint(3, &flags) < 0)
++  {
++    return -1;
++  }
++  if(argint(4, &fd) < 0)
++  {
++    return -1;
+   }
+-  return (int)mmap((void*)addr, (uint)len, prot, flags, fd, offset);
++  if(argint(5, &offset) < 0)
++  {
++    return -1;
++  }
++  return (int)mmap((void*)addr, (uint)length, prot, flags, fd, offset);
+ }
+ 
+ int
+@@ -129,3 +153,20 @@
+   }
+   return munmap((void*)addr, (uint)len);
+ }
++int
++sys_msync(void)
++{
++  int addr;
++  int length;
++
++  if(argint(0, &addr) < 0)
++  {
++    return -1;
++  }
++  if(argint(1, &length) < 0)
++  {
++    return -1;
++  }
++
++  return msync((void*)addr, (uint)length);
++}
+\ No newline at end of file
+diff -ruN src/test_1.c src-finished/test_1.c
+--- src/test_1.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_1.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,60 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++
++
++/*Testing whether address returned by anonymous mmap is page aligned.*/
++int
++main(int argc, char *argv[])
++{
++  int size = 200;
++  char *r1 = mmap(0, size, 0/*prot*/, 0/*flags*/, -1/*fd*/, 0/*offset*/);
++
++  char *r2 = mmap(0, size, 0/*prot*/, 0/*flags*/, -1/*fd*/, 0/*offset*/);
++
++  char *r3 = mmap(0, size, 0/*prot*/, 0/*flags*/, -1/*fd*/, 0/*offset*/);
++
++  int rem1 = ((int)r1 % PGSIZE);
++  int rem2 = ((int)r2 % PGSIZE);
++  int rem3 = ((int)r3 % PGSIZE);
++
++  printf(1, "XV6_TEST_OUTPUT : rem1 = %d rem2 = %d rem3 = %d\n",rem1,rem2,rem3);
++
++  if(rem1 != 0 || rem2 != 0 || rem3 != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : Address returned by mmap should be page aligned\n");
++    exit();
++  }
++
++  printf(1, "XV6_TEST_OUTPUT : mmap good --> address returned is page aligned\n");
++
++  int rv1 = munmap(r1, size);
++  if (rv1 < 0) {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++
++  int rv2 = munmap(r2, size);
++  if (rv2 < 0) {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++
++
++  int rv3 = munmap(r3, size);
++  if (rv3 < 0) {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++  
++  printf(1, "XV6_TEST_OUTPUT : munmap good\n");
++
++  exit();
++}
+diff -ruN src/test_2.c src-finished/test_2.c
+--- src/test_2.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_2.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,49 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++
++/* Testing Anonymous mmap with PROT_WRITE*/
++
++int
++main(int argc, char *argv[])
++{
++  int size =  10;  /* we need 10 bytes */
++ 
++  // mmap
++  char *addr = (char*)0x4000;
++  char* str = mmap(addr, size,  PROT_WRITE/*prot*/, MAP_ANONYMOUS, -1/*fd*/, 0/*offset*/);
++
++  if (str<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : mmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : mmap good\n");
++
++
++  printf(1, "XV6_TEST_OUTPUT : Strlen Before modification: %d\n", strlen((char*)str));
++
++  strcpy(str, "012345");
++
++  printf(1, "XV6_TEST_OUTPUT : str = %s\n", (char*)str);
++  printf(1, "XV6_TEST_OUTPUT : Strlen After modification: %d\n", strlen((char*)str));
++
++
++  // munmap
++  int rv = munmap(str, size);
++  if (rv < 0) {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++
++  printf(1, "XV6_TEST_OUTPUT : munmap good\n");
++  exit();
++}
+diff -ruN src/test_3.c src-finished/test_3.c
+--- src/test_3.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_3.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,38 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++
++/* Testing Anonymous mmap without PROT_WRITE*/
++
++int
++main(int argc, char *argv[])
++{  
++  int size =  10;  /* we need 10 bytes */
++ 
++  char *addr = (char*)0x4000;
++  char* str = mmap(addr, size,  0/*prot*/, MAP_ANONYMOUS, -1/*fd*/, 0/*offset*/);
++
++  if (str<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : mmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : mmap good\n");
++
++
++  printf(1, "XV6_TEST_OUTPUT : Strlen Before modification: %d\n", strlen((char*)str));
++
++  strcpy(str, "012345"); //This should fail
++
++  printf(1, "XV6_TEST_OUTPUT : this shouldn't print\n");
++  
++  exit();
++}
+diff -ruN src/test_4.c src-finished/test_4.c
+--- src/test_4.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_4.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,64 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++
++ /* Testing Anonymous mmap that spans across multiple pages*/
++int
++main(int argc, char *argv[])
++{
++  int size =  3*PGSIZE;
++
++  // mmap
++  char *addr = (char*)0x4000;
++  char* r = mmap(addr, size,  PROT_WRITE/*prot*/, 0/*flags*/, -1/*fd*/, 0/*offset*/);
++
++  if (r<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : mmap failed\n");
++    exit();
++  }
++  
++  printf(1, "XV6_TEST_OUTPUT : mmap good\n");
++
++
++  // memset and validate
++  memset(r, 'a', size - 1);
++  printf(1, "XV6_TEST_OUTPUT : strlen(r) = %d\n", strlen(r));
++
++  char* aChars = malloc(size);
++  memset(aChars, 'a', size-1);
++
++  int ret = strcmp(r, aChars);
++  printf(1, "XV6_TEST_OUTPUT : Return val of strcmp %d\n", ret);
++
++  free(aChars);
++  if (ret != 0) {
++    printf(1, "XV6_TEST_OUTPUT : value at the newly mapped anonymous memory region is wrong.!!\n");
++    exit();
++  }
++  else
++  {
++    printf(1, "XV6_TEST_OUTPUT : value at the newly mapped anonymous memory region is correct.!!\n");
++  }
++
++
++  // munmap
++  int rv = munmap(r, size);
++  if (rv < 0) 
++  {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : munmap good\n");
++
++  
++  exit();
++}
+diff -ruN src/test_5.c src-finished/test_5.c
+--- src/test_5.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_5.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,128 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++
++
++/* File Backed mmap test : Accessing mmap-ed memory region after file close.
++The contents should persist.*/
++
++int
++main(int argc, char *argv[])
++{
++  int rc;
++  char fileName[50];
++  strcpy(fileName, "sample.txt");
++
++  // Prepare file for test
++  int fd = open(fileName, O_RDWR|O_CREATE);
++  write(fd, "Hello World.!", 13);
++  close(fd);
++
++  // open existing file
++  fd = open(fileName, O_RDWR);
++  if(fd<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file open failed %d\n", fd);
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file open suceeded\n");
++
++
++
++  // Read the file content into buff1
++  char buff1[256];
++  int sz = read(fd, buff1, 50);
++  buff1[sz] = '\0';
++  printf(1, "XV6_TEST_OUTPUT : First Read returned : %d\n", sz);
++  printf(1, "XV6_TEST_OUTPUT : file content : %s\n", (char*)buff1);
++
++
++
++  // close file
++  rc = close(fd);
++  if(rc != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file close failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file close suceeded\n");
++
++
++
++
++  // open the file again
++  fd = open(fileName, O_RDWR);
++  if(fd<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file open failed %d\n", fd);
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file open suceeded\n");
++
++
++
++  // mmap the file
++  int file_offset = 0;
++  int map_size = 50;
++  char *addr = (char *) mmap(0, map_size, PROT_WRITE, MAP_FILE, fd, file_offset);
++
++  if (addr<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : mmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : mmap suceeded\n");
++
++
++
++  // close file
++  rc = close(fd);
++  if(rc != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file close failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file close suceeded\n");
++
++
++
++  // Read the content from the mmap-ed memory region
++  char buff2[256];
++  strcpy(buff2, addr);
++  printf(1, "XV6_TEST_OUTPUT : File content from mmap: %s\n", (char*)buff2);
++
++  int ret = strcmp(buff1, buff2);
++  printf(1, "XV6_TEST_OUTPUT : Return val of strcmp %d\n", ret);
++
++  if (ret == 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : File content and memory mapped content are Same.\n");
++  }
++  else
++  {
++    printf(1, "XV6_TEST_OUTPUT : File content and memory mapped content are different.\n");
++    exit();
++  }
++
++
++
++  // munmap
++  rc = munmap(addr, map_size);
++  if (rc < 0) 
++  {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : munmap suceeded\n");
++
++
++  exit();
++}
+diff -ruN src/test_6.c src-finished/test_6.c
+--- src/test_6.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_6.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,150 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++
++/* File Backed mmap test : testing msync */
++
++int PrintFileContents(char* fileName)
++{
++  int fd = open(fileName, O_RDONLY);
++  if(fd<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file open failed %d inside PrintFileContents function.\n", fd);
++    return 0;
++  }
++
++
++  char buff[256];
++  int sz = read(fd, buff, 50);
++  buff[sz] = '\0';
++  
++  printf(1, "XV6_TEST_OUTPUT : file content now : < %s >\n", (char*)buff);
++
++  // close file
++  int rc = close(fd);
++  if(rc != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file close failed inside PrintFileContents function.\n");
++    return 0;
++  }
++
++  return 1;
++}
++
++int
++main(int argc, char *argv[])
++{  
++  /*
++  Print the contents of file
++  Open an existing file.
++  mmap it.
++  write to the memory mapped region.
++  msync.
++  munmap.
++  Check file for newly written content.
++  close the file.
++  */
++  int rc;
++  char buff[256];
++  char fileName[50]="sample.txt";
++
++  // Prepare file for test
++  int fd = open(fileName, O_RDWR|O_CREATE);
++  write(fd, "Hello World.!", 13);
++  close(fd);
++
++  // Print the file contents
++  if(!PrintFileContents(fileName))
++  {
++    printf(1, "XV6_TEST_OUTPUT : Printing file content failed.\n");
++    exit();
++  }
++
++
++  // Open file in Read-Write mode
++  fd = open(fileName, O_RDWR);
++  if(fd<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file open failed %d\n", fd);
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file open suceeded\n");
++
++
++  // mmap the file
++  int file_offset = 0;
++  int map_size = 50;
++  char *addr = (char *) mmap(0, map_size, PROT_WRITE, MAP_FILE, fd, file_offset);
++
++  if (addr<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : mmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : mmap suceeded\n");
++
++
++
++  // Print the mmap-ed region.
++  strcpy(buff, addr);
++  printf(1, "XV6_TEST_OUTPUT : Before mysnc, content in mmap-ed region: %s\n", buff);
++
++
++
++  // write to the file-backed mmap memory region.
++  strcpy((char*)addr, "This is overwritten content.!");
++
++
++
++  // call msync
++  printf(1, "XV6_TEST_OUTPUT : msync return val : %d\n", msync(addr, map_size));
++
++
++
++  // Print the mmap-ed region.
++  strcpy(buff, addr);
++  printf(1, "XV6_TEST_OUTPUT : After mysnc, content in the mmap-ed region : %s\n", buff);
++
++
++
++  // Print the file contents
++  if(!PrintFileContents(fileName))
++  {
++    printf(1, "XV6_TEST_OUTPUT : Printing file content failed.\n");
++    exit();
++  }
++
++
++
++  //munmap
++  rc = munmap(addr, map_size);
++  if (rc < 0) 
++  {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : munmap suceeded\n");
++
++
++
++  // close file
++  rc = close(fd);
++  if(rc != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file close failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file close suceeded\n");
++
++
++
++  exit();
++}
+diff -ruN src/test_7.c src-finished/test_7.c
+--- src/test_7.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_7.c	2023-04-18 21:51:54.000000000 +0800
+@@ -0,0 +1,131 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++
++
++/* File Backed mmap test : testing file backed mmap with offset */
++int
++main(int argc, char *argv[])
++{  
++    /*
++   * Prepare a file which is filled with raw integer values. These
++   * integer values are their offsets in the file.
++   */
++  int rc;
++  char tmp_filename[26];
++  strcpy(tmp_filename, "test_file.txt");
++
++
++  // Create file
++  int fd = open(tmp_filename, O_WRONLY | O_CREATE);
++  if(fd<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file creation failed %d\n", fd);
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file creation suceeded\n");
++
++
++
++  // Write raw integer to the file
++  const int map_size = 0x10;
++  for (int i = 0; i < map_size * 2; i += sizeof(i))
++  {
++    uint written = write(fd, &i, sizeof(i));
++    printf(1, "XV6_TEST_OUTPUT : writing %d to file\n", i);
++
++    if(written != sizeof(i))
++    {
++      printf(1, "XV6_TEST_OUTPUT : file write failed\n");
++      exit();
++    }
++  }
++  printf(1, "XV6_TEST_OUTPUT : file write suceeded\n");
++
++
++
++  // close file
++  rc = close(fd);
++  if(rc != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file close failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file close suceeded\n");
++
++
++
++  // Open file again
++  fd = open(tmp_filename, O_RDWR);
++  if(fd<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file open failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file open suceeded\n");
++
++
++
++  // mmap the file with a offset
++  /* A valid mmap call with an offset specified. */
++  int file_offset = 0x10;
++  char *addr = (char *) mmap(0, map_size, PROT_WRITE, MAP_FILE, fd, file_offset);
++
++  if (addr<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : mmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : mmap suceeded\n");
++
++
++
++  //Validate the contents of the file from the specified offset.
++  for (int i = 0; i < map_size; i += sizeof(i))
++  {
++    int expected = i + file_offset;
++    int actual = *(int *) (addr + i);
++
++    printf(1, "XV6_TEST_OUTPUT : Expected val : %d Actual val : %d\n",expected, actual);
++
++    if(actual != expected)
++    {
++      printf(1, "XV6_TEST_OUTPUT : file is Incorrectly mapped\n");
++      exit();
++    }
++  }
++  printf(1, "XV6_TEST_OUTPUT : file is correctly mapped\n");
++
++
++
++  //munmap
++  rc = munmap(addr, map_size);
++  if (rc < 0) 
++  {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : munmap suceeded\n");
++
++
++
++  // close file
++  rc = close(fd);
++  if(rc != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file close failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file close suceeded\n");
++  
++  
++  exit();
++}
+diff -ruN src/test_8.c src-finished/test_8.c
+--- src/test_8.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_8.c	2023-04-28 21:50:42.000000000 +0800
+@@ -0,0 +1,45 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++
++
++#define PGSIZE 4096
++
++int main(int argc, char *argv[])
++{
++    // Allocate memory using mmap
++  char* str = mmap(0, 4096, PROT_WRITE, MAP_FILE, -1, 0);
++
++  if (str<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : mmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : mmap good\n");
++
++  // Write some data to the memory region
++  str[0] = 'x';
++
++  printf(1, "XV6_TEST_OUTPUT : write good\n");
++
++  // Cause a page fault by accessing unmapped memory
++  char c = str[8192];//fragment fault
++  
++  printf(1, "XV6_TEST_OUTPUT : this shouldn't print\n");
++
++  if (c == 'x') {
++    printf(1, "Test passed!\n");
++  } else {
++    printf(1, "Test failed!\n");
++  }
++
++  exit();
++}
+\ No newline at end of file
+diff -ruN src/test_9.c src-finished/test_9.c
+--- src/test_9.c	1970-01-01 08:00:00.000000000 +0800
++++ src-finished/test_9.c	2023-04-28 21:50:42.000000000 +0800
+@@ -0,0 +1,249 @@
++#include "param.h"
++#include "types.h"
++#include "stat.h"
++#include "user.h"
++#include "fs.h"
++#include "fcntl.h"
++#include "syscall.h"
++#include "traps.h"
++#include "memlayout.h"
++#include "mmu.h"
++#include "mman.h"
++#include "fcntl.h"
++#include "stddef.h"
++
++#define TEST_COUNT 20
++#define MAX_SIZE 1000
++
++#define PGSIZE 4096
++//=====
++
++#define MAP_SIZE 4096
++#define ITERATIONS 1
++
++
++#define TEST_FILENAME "test_file.txt"
++#define FILE_SIZE 1024//(10 * 1024 * 1024) // 10MB
++#define FILE_OFFSET 0x1000
++
++int main()
++{
++
++    /*
++   * Prepare a file which is filled with raw integer values. These
++   * integer values are their offsets in the file.
++   */
++  int rc;
++  char tmp_filename[FILE_SIZE];
++  strcpy(tmp_filename, "test_file.txt");
++
++
++  printf(1, "XV6_TEST_OUTPUT : copy data suceeded\n");
++  // Create file
++  int fd = open(tmp_filename, O_WRONLY | O_CREATE);
++  if(fd<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file creation failed %d\n", fd);
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file creation suceeded\n");
++
++
++
++  // Write raw integer to the file
++  const int map_size = 0x10;
++  for (int i = 0; i < map_size * 2; i += sizeof(i))
++  {
++    uint written = write(fd, &i, sizeof(i));
++    printf(1, "XV6_TEST_OUTPUT : writing %d to file\n", i);
++
++    if(written != sizeof(i))
++    {
++      printf(1, "XV6_TEST_OUTPUT : file write failed\n");
++      exit();
++    }
++  }
++  printf(1, "XV6_TEST_OUTPUT : file write suceeded\n");
++
++
++
++  // close file
++  rc = close(fd);
++  if(rc != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file close failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file close suceeded\n");
++
++
++
++  // Open file again
++  fd = open(tmp_filename, O_RDWR);
++  if(fd<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file open failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file open suceeded\n");
++
++
++
++  // mmap the file with a offset
++  /* A valid mmap call with an offset specified. */
++  int file_offset = 0x10;
++  char *addr = (char *) mmap(0, map_size, PROT_WRITE, MAP_FILE, fd, file_offset);
++
++  if (addr<=0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : mmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : mmap suceeded\n");
++
++
++
++  //Validate the contents of the file from the specified offset.
++  for (int i = 0; i < map_size; i += sizeof(i))
++  {
++    int expected = i + file_offset;
++    int actual = *(int *) (addr + i);
++
++    printf(1, "XV6_TEST_OUTPUT : Expected val : %d Actual val : %d\n",expected, actual);
++
++    if(actual != expected)
++    {
++      printf(1, "XV6_TEST_OUTPUT : file is Incorrectly mapped\n");
++      exit();
++    }
++  }
++  printf(1, "XV6_TEST_OUTPUT : file is correctly mapped\n");
++
++
++
++  //munmap
++  rc = munmap(addr, map_size);
++  if (rc < 0) 
++  {
++    printf(1, "XV6_TEST_OUTPUT : munmap failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : munmap suceeded\n");
++
++
++
++  // close file
++  rc = close(fd);
++  if(rc != 0)
++  {
++    printf(1, "XV6_TEST_OUTPUT : file close failed\n");
++    exit();
++  }
++  printf(1, "XV6_TEST_OUTPUT : file close suceeded\n");
++  
++  
++  exit();
++}
++
++void generate_data(char *data)
++{
++    for (int i = 0; i < FILE_SIZE; i++) {
++        data[i] = i;
++    }
++}
++int main22()
++{
++    char *filename = "test_file.txt";
++    char data[FILE_SIZE];
++    int fd, rc, offset;
++    char *addr;
++
++    printf(1, "XV6_TEST_OUTPUT : start\n");
++    generate_data(data);
++
++    printf(1, "XV6_TEST_OUTPUT : data creation suceeded\n");
++    // Create file
++    fd = open(filename, O_WRONLY | O_CREATE);
++
++    if (fd < 0) {
++        printf(1, "Error: cannot create file %s\n", filename);
++        exit();
++    }
++
++    printf(1, "XV6_TEST_OUTPUT : file creation suceeded\n");
++    rc = write(fd, data, FILE_SIZE);
++    if (rc < 0) {
++        printf(1, "Error: cannot write to file %s\n", filename);
++        exit();
++    }
++
++    printf(1, "XV6_TEST_OUTPUT : writing file suceeded\n");
++    close(fd);
++
++    // Open file for read-write
++    fd = open(filename, O_RDWR);
++    if (fd < 0) {
++        printf(1, "Error: cannot open file %s\n", filename);
++        exit();
++    }
++
++    printf(1, "XV6_TEST_OUTPUT : file open suceeded\n");
++    // mmap the file
++
++    offset = 0x10;
++    addr = mmap(0, MAP_SIZE, PROT_WRITE, MAP_FILE, fd, offset);
++    if (addr<=0) {
++        printf(1, "Error: cannot mmap file %s\n", filename);
++        exit();
++    }
++
++    printf(1, "XV6_TEST_OUTPUT : perform msync suceeded\n");
++    // Perform msync in a loop
++    rc = msync(addr, MAP_SIZE);
++    if (rc < 0) {
++        printf(1, "Error: cannot msync file %s\n", filename);
++        exit();
++    }
++    
++
++    // Unmap the file and close it
++    munmap(addr, MAP_SIZE);
++    close(fd);
++
++    printf(1, "Pressure test completed successfully.\n");
++    exit();
++}
++
++int main33(int argc, char *argv[]) {
++  // Allocate memory using mmap
++  void *addr = mmap(0, PGSIZE,  PROT_WRITE, MAP_ANONYMOUS, -1, 0);
++  if (addr <=0) {
++    printf(1,"mmap failed\n");
++    exit();
++  }
++
++  // Write some data to the allocated memory
++  char *str = "hello, world!";
++  strcpy((char*)addr, str);
++
++  // Verify that the data is written correctly
++  if (strcmp((char*)addr, str) != 0) {
++    printf(1,"data verification failed\n");
++    exit();
++  }
++
++  // Unmap the memory
++  if (munmap(addr, PGSIZE) < 0) {
++    printf(1,"munmap failed\n");
++    exit();
++  }
++
++  // Verify that the memory is no longer accessible
++  if (strcmp((char*)addr, str) == 0) {
++    printf(1,"memory still accessible after munmap\n");
++    exit();
++  }
++
++  printf(1,"test passed\n");
++  exit();
++}
+diff -ruN src/trap.c src-finished/trap.c
+--- src/trap.c	2023-04-16 22:20:46.000000000 +0800
++++ src-finished/trap.c	2023-04-28 21:50:42.000000000 +0800
+@@ -3,6 +3,7 @@
+ #include "param.h"
+ #include "memlayout.h"
+ #include "mmu.h"
++#include "mman.h"
+ #include "proc.h"
+ #include "x86.h"
+ #include "traps.h"
+@@ -14,6 +15,154 @@
+ struct spinlock tickslock;
+ uint ticks;
+ 
++
++// jps - pagefault_handler()
++/*
++ *  This function helps implement the lazy mmap allocation required for this project.
++ *  When a pagefault occurs, this function will be called and the mmap linked list
++ *  will be searched to see if the faulting address has been decleared as allocated.
++ *  If it has been "allocated", the page containing the faulting address will acutally
++ *  be allocated to the process.
++ * 
++ *  INPUT: struct trapframe *tf - the trapframe for a faulting address
++ *  OUTPUT: void
++ */
++void
++pagefault_handler(struct trapframe *tf)
++{
++  struct proc *curproc = myproc();
++  //get the address of the page that caused the fault,
++  uint fault_addr = rcr2();
++
++  // Start -- Required debugging statement -----
++  cprintf("============trap pagefault_handler============\n");
++  cprintf("pid %d %s: trap %d err %d on cpu %d "
++  "eip 0x%x addr 0x%x--trap pagefault_handler\n", curproc->pid, curproc->name, tf->trapno, tf->err, cpuid(), tf->eip, fault_addr);
++  // End -- Required debugging statement ----
++
++  //iterating over the linked list of memory-mapped regions (mmap_regions_head) 
++  //and checking if the faulting address falls within the bounds of any of the regions.
++  //the faulting address belongs to a valid memory-mapped region of the process
++  int valid = 0;
++  mmap_region *mmap_node = curproc->mmap_regions_head;
++
++  //round down the faulting address to the start of the page.
++  fault_addr = PGROUNDDOWN(fault_addr);
++
++  cprintf("============for loop============\n");
++  while(mmap_node)
++  {
++    //if (fault_addr == (uint)mmap_node->start_addr)
++    if ((uint)(mmap_node->start_addr) <= fault_addr && (uint)(mmap_node->start_addr + mmap_node->length) > fault_addr)
++    { 
++      cprintf("============check prot_write============\n");
++      //If a valid memory-mapped region is found, the code checks if the page fault was caused by a write operation
++      if ((mmap_node->prot & PROT_WRITE) || !(tf->err & T_ERR_PGFLT_W)) 
++      {
++        valid = 1;
++      }
++      break; 
++    }
++    else
++    {
++      mmap_node = mmap_node->next_mmap_region;
++    }
++  }
++
++  if (valid == 1)
++  {
++    //cprintf("============valid is ============\n");
++    char *mem;
++    mem = kalloc();
++
++    if(mem == 0)
++    {
++      cprintf("============check mem failure============\n");
++      deallocuvm(curproc->pgdir,fault_addr+PGSIZE,fault_addr);
++      kfree(mem);
++      goto error;
++    }
++    memset(mem, 0, PGSIZE);
++    
++    // If the mmap region does not have write permission, then the page table entry is marked with only user permission.
++    // Otherwise, it is marked with both user and write permission. 
++    int perm;
++    cprintf("============write permissions============\n");
++    if (mmap_node->prot == PROT_WRITE)
++    {
++      perm = PTE_W|PTE_U; //give write permissions
++    }
++    else
++    {
++      perm = PTE_U; //do not give write permissions
++    }
++    //the mappages() function is used to map the page to the faulting virtual address in the current process’s page table.
++
++    cprintf("============check mappages============\n");
++    if(mappages(curproc->pgdir, (char*)fault_addr, PGSIZE, V2P(mem), perm) < 0)
++    {
++      deallocuvm(curproc->pgdir,fault_addr+PGSIZE,fault_addr);
++      kfree(mem);
++      goto error;
++    }
++
++    switchuvm(curproc);
++
++    // checking if the region type of the page that caused the fault is MAP_FILE
++    if (mmap_node->region_type == MAP_FILE)
++    {
++      cprintf("============MAP_FILE============\n");
++      //checks if the file descriptor for the file being accessed exists in the current process's file descriptor table.
++      if (curproc->ofile[mmap_node->fd])
++      {
++        cprintf("============check file============\n");
++        int result=0;
++        //the code seeks to the appropriate offset in the file and reads the required data into memory.
++        if((result=fileseek(curproc->ofile[mmap_node->fd], mmap_node->offset))==-1)
++        {
++          deallocuvm(curproc->pgdir,fault_addr+PGSIZE,fault_addr);
++          kfree(mem);
++          goto error;
++        }
++        cprintf("============check file 2============\n");
++        if((result=fileread(curproc->ofile[mmap_node->fd], mem, mmap_node->length))==-1)
++        {
++          deallocuvm(curproc->pgdir,fault_addr+PGSIZE,fault_addr);
++          kfree(mem);
++          goto error;
++        }
++        cprintf("============change flag============\n");
++        //the code clears the dirty bit of the page table entry corresponding to the page that caused the fault. 
++          pde_t* pde = &(myproc()->pgdir)[PDX(mmap_node->start_addr)];
++          pte_t* pgtab = (pte_t*)P2V(PTE_ADDR(*pde));
++          pte_t* pte = &pgtab[PTX(mmap_node->start_addr)];
++
++          *pte &= ~PTE_D;
++      }
++    }
++  }
++  else  
++  {
++    //If the page fault did not occur on a memory-mapped file
++    //then the code prints an error message and sets the killed flag of the current process to 1.
++    error:
++      cprintf("============valid failure or not exists in mmap region list============\n");
++      if(myproc() == 0 || (tf->cs&3) == 0){
++        // In kernel
++        //The error message contains information about the process ID, name, the type of trap, 
++        //and the address that caused the page fault.
++        cprintf("unexpected trap %d from cpu %d eip %x (cr2=0x%x)\n",
++                tf->trapno, cpuid(), tf->eip, rcr2());
++        panic("trap");
++      }
++      // In user space
++      cprintf("pid %d %s: trap %d err %d on cpu %d "
++              "eip 0x%x addr 0x%x--kill proc\n",
++              myproc()->pid, myproc()->name, tf->trapno,
++              tf->err, cpuid(), tf->eip, rcr2());
++      myproc()->killed = 1;
++  }
++}
+ void
+ tvinit(void)
+ {
+@@ -77,7 +226,9 @@
+             cpuid(), tf->cs, tf->eip);
+     lapiceoi();
+     break;
+-
++  case T_PGFLT: //jps - added pagefault check in the trap switch statement
++    pagefault_handler(tf);
++    break;
+   //PAGEBREAK: 13
+   default:
+     if(myproc() == 0 || (tf->cs&3) == 0){
+diff -ruN src/traps.h src-finished/traps.h
+--- src/traps.h	2023-04-16 22:20:46.000000000 +0800
++++ src-finished/traps.h	2023-04-18 21:51:54.000000000 +0800
+@@ -36,3 +36,6 @@
+ #define IRQ_ERROR       19
+ #define IRQ_SPURIOUS    31
+ 
++#define T_ERR_PGFLT_P   0x1     // When set, page fault caused by page-protection violation, else page-not-present
++#define T_ERR_PGFLT_W   0X2     // When set, page fault caused by write access, else read access
++#define T_ERR_PGFLT_U   0x4     // When set, page fault caused while CPL=3. (Not necessarily caused by privileges)
+\ No newline at end of file
+diff -ruN src/user.h src-finished/user.h
+--- src/user.h	2023-04-28 21:59:33.000000000 +0800
++++ src-finished/user.h	2023-04-18 21:51:54.000000000 +0800
+@@ -27,6 +27,7 @@
+ void kmfree(void*);
+ void* mmap(void*, uint, int, int, int, int);
+ int munmap(void*, uint);
++int msync(void*, uint);
+ 
+ // ulib.c
+ int stat(const char*, struct stat*);
+diff -ruN src/usys.S src-finished/usys.S
+--- src/usys.S	2023-04-28 21:59:33.000000000 +0800
++++ src-finished/usys.S	2023-04-18 21:51:54.000000000 +0800
+@@ -33,3 +33,4 @@
+ SYSCALL(kmfree)
+ SYSCALL(mmap)
+ SYSCALL(munmap)
++SYSCALL(msync)
+\ No newline at end of file
+diff -ruN src/vm.c src-finished/vm.c
+--- src/vm.c	2023-04-28 21:59:33.000000000 +0800
++++ src-finished/vm.c	2023-04-28 21:50:42.000000000 +0800
+@@ -32,7 +32,7 @@
+ // Return the address of the PTE in page table pgdir
+ // that corresponds to virtual address va.  If alloc!=0,
+ // create any required page table pages.
+-static pte_t *
++ pte_t *
+ walkpgdir(pde_t *pgdir, const void *va, int alloc)
+ {
+   pde_t *pde;
+@@ -57,7 +57,7 @@
+ // Create PTEs for virtual addresses starting at va that refer to
+ // physical addresses starting at pa. va and size might not
+ // be page-aligned.
+-static int
++ int
+ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
+ {
+   char *a, *last;
+@@ -218,8 +218,8 @@
+ 
+ // Allocate page tables and physical memory to grow process from oldsz to
+ // newsz, which need not be page aligned.  Returns new size or 0 on error.
+-int
+-allocuvm(pde_t *pgdir, uint oldsz, uint newsz)
++ int
++allocuvm_ex(pde_t *pgdir, uint oldsz, uint newsz)
+ {
+   char *mem;
+   uint a;
+@@ -247,6 +247,24 @@
+   }
+   return newsz;
+ }
++int
++allocuvm_mmap(pde_t *pgdir, uint oldsz, uint newsz)
++{
++  if(oldsz < MMAPBASE) {
++    panic("allocuvm_mmap: invalid oldsz");
++    return 0;
++  }
++  return allocuvm_ex(pgdir, oldsz, newsz);
++}
++int
++allocuvm_proc(pde_t *pgdir, uint oldsz, uint newsz)
++{
++  if(newsz >= MMAPBASE) {
++    panic("allocuvm_proc: invalid newsz");
++    return 0;
++  }
++  return allocuvm_ex(pgdir, oldsz, newsz);
++}
+ 
+ // Deallocate user pages to bring the process size from oldsz to
+ // newsz.  oldsz and newsz need not be page-aligned, nor does newsz
+@@ -310,19 +328,6 @@
+   *pte &= ~PTE_U;
+ }
+ 
+-// Has PTE_P on a page. Used to determine if a page is present.
+-int
+-hasptep(pde_t *pgdir, char *uva)
+-{
+-  pte_t *pte;
+-
+-  pte = walkpgdir(pgdir, uva, 0);
+-  if((*pte & PTE_P) == 0)
+-    return 0;
+-  else
+-    return 1;
+-}
+-
+ // Given a parent process's page table, create a copy
+ // of it for a child.
+ pde_t*
+@@ -337,9 +342,9 @@
+     return 0;
+   for(i = 0; i < sz; i += PGSIZE){
+     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
+-      continue;
++      panic("copyuvm: pte should exist");
+     if(!(*pte & PTE_P))
+-      continue;
++      panic("copyuvm: page not present");
+     pa = PTE_ADDR(*pte);
+     flags = PTE_FLAGS(*pte);
+     if((mem = kalloc()) == 0)

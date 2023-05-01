@@ -10,13 +10,12 @@
 #include "mmu.h"
 #include "mman.h"
 
-
-#define PGSIZE 4096
-
 int main(int argc, char *argv[])
 {
+
+  int size =  3*PGSIZE;
     // Allocate memory using mmap
-  char* str = mmap(0, 4096, PROT_WRITE, MAP_FILE, -1, 0);
+  char* str = mmap(0, size, PROT_WRITE, MAP_FILE, -1, 0);
 
   if (str<=0)
   {
@@ -31,7 +30,7 @@ int main(int argc, char *argv[])
   printf(1, "XV6_TEST_OUTPUT : write good\n");
 
   // Cause a page fault by accessing unmapped memory
-  char c = str[8192];//fragment fault
+  char c = str[size*2];//fragment fault
   
   printf(1, "XV6_TEST_OUTPUT : this shouldn't print\n");
 
